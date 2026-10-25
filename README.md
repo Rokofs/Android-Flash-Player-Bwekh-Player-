@@ -1,3 +1,5 @@
+> The app was written entirely with Claude!
+
 # Bwekh Player
 
 A Flash (SWF) game and animation player for Android 5+ (arm64 and arm32), built with the HARMAN AIR SDK. Version **1.8.4**. [Русская версия](README.ru.md)
