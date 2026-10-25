@@ -2,6 +2,10 @@
 
 <h1 align="center">Bwekh Player</h1>
 
+> The app was written entirely with Claude!
+
+> Inspirator and beta tester: manule
+
 A Flash (SWF) game and animation player for Android 5+ (arm64 and arm32), built with the HARMAN AIR SDK. Version **1.8.4**. [Русская версия](README.ru.md)
 
 ## Engines
