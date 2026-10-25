@@ -44,6 +44,6 @@ Java-часть и нативный Ruffle уже собраны (`native\build`
   <img src="pic/UX-sketch_mainmenu.png" width="45%" alt="Скетч главного меню">
   <img src="pic/UX-sketch_nowplaying.png" width="45%" alt="Скетч экрана игры">
 </p>
-<p align="center"><i>Скетчи за авторством Манула, по ним Claude делал UX.</i></p>
+<p align="center"><i>Скетчи за авторством manule, по ним Claude делал UX.</i></p>
 
 Ruffle © Ruffle contributors (MIT / Apache-2.0). Adobe AIR © HARMAN.
