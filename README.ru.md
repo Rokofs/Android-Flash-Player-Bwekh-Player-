@@ -2,9 +2,9 @@
 
 <h1 align="center">Bwekh Player</h1>
 
->Приложение было полностью написано через Claude!
+> Приложение было полностью написано через Claude!
 
->Вдохновитель и бета тестер: manule
+> Вдохновитель и бета тестер: manule
 
 Проигрыватель Flash-игр и анимаций (SWF) для Android 5+ (arm64 и arm32) на HARMAN AIR SDK. Версия **1.8.4**. [English](README.md)
 
