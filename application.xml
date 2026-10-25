@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Bwekh Player for Android — AIR application descriptor.
+  The namespace 51.1 works with HARMAN AIR SDK 51.1 and newer.
+-->
+<application xmlns="http://ns.adobe.com/air/application/51.1">
+	<id>com.vibefoxcodding.flashplayer</id>
+	<filename>FlashPlayer</filename>
+	<name>Bwekh Player</name>
+	<versionNumber>1.8.4</versionNumber>
+	<versionLabel>1.8.4</versionLabel>
+	<description>Plays Flash (SWF) animations and games. ActionScript 3 via Adobe AIR.</description>
+	<copyright>vibefoxcodding LLC</copyright>
+
+	<initialWindow>
+		<content>FlashPlayer.swf</content>
+		<title>Bwekh Player</title>
+		<visible>true</visible>
+		<fullScreen>false</fullScreen>
+		<aspectRatio>portrait</aspectRatio>
+		<autoOrients>true</autoOrients>
+		<!-- direct: Stage3D games (Starling/Away3D) work; vector content is still rendered by the CPU -->
+		<renderMode>direct</renderMode>
+		<depthAndStencil>true</depthAndStencil>
+		<softKeyboardBehavior>pan</softKeyboardBehavior>
+	</initialWindow>
+
+	<icon>
+		<image36x36>icons/icon36.png</image36x36>
+		<image48x48>icons/icon48.png</image48x48>
+		<image72x72>icons/icon72.png</image72x72>
+		<image96x96>icons/icon96.png</image96x96>
+		<image144x144>icons/icon144.png</image144x144>
+		<image192x192>icons/icon192.png</image192x192>
+	</icon>
+
+	<supportedProfiles>mobileDevice</supportedProfiles>
+
+	<android>
+		<manifestAdditions><![CDATA[
+<manifest android:installLocation="auto">
+	<uses-permission android:name="android.permission.INTERNET"/>
+	<uses-permission android:name="android.permission.WAKE_LOCK"/>
+	<uses-permission android:name="android.permission.DISABLE_KEYGUARD"/>
+	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
+	<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+	<application android:hardwareAccelerated="true" android:requestLegacyExternalStorage="true">
+		<!-- "Open with": .swf files from file managers, browsers, messengers. A separate invisible
+		     activity takes them (AIR's own activity crashes on VIEW intents) and starts the player. -->
+		<activity android:name="com.vibefoxcodding.fpnative.OpenActivity"
+			android:theme="@android:style/Theme.Translucent.NoTitleBar"
+			android:exported="true"
+			android:excludeFromRecents="true"
+			android:noHistory="true"
+			android:taskAffinity=""
+			android:configChanges="orientation|screenSize|keyboardHidden">
+			<intent-filter>
+				<action android:name="android.intent.action.VIEW"/>
+				<category android:name="android.intent.category.DEFAULT"/>
+				<category android:name="android.intent.category.BROWSABLE"/>
+				<data android:scheme="content"/>
+				<data android:scheme="file"/>
+				<data android:mimeType="application/x-shockwave-flash"/>
+			</intent-filter>
+			<intent-filter>
+				<action android:name="android.intent.action.VIEW"/>
+				<category android:name="android.intent.category.DEFAULT"/>
+				<category android:name="android.intent.category.BROWSABLE"/>
+				<data android:scheme="content"/>
+				<data android:scheme="file"/>
+				<data android:mimeType="application/vnd.adobe.flash.movie"/>
+			</intent-filter>
+			<intent-filter>
+				<action android:name="android.intent.action.VIEW"/>
+				<category android:name="android.intent.category.DEFAULT"/>
+				<category android:name="android.intent.category.BROWSABLE"/>
+				<data android:scheme="file"/>
+				<data android:scheme="content"/>
+				<data android:host="*"/>
+				<data android:mimeType="*/*"/>
+				<data android:pathPattern=".*\\.swf"/>
+				<data android:pathPattern=".*\\..*\\.swf"/>
+				<data android:pathPattern=".*\\..*\\..*\\.swf"/>
+				<data android:pathPattern=".*\\.SWF"/>
+			</intent-filter>
+		</activity>
+		<activity android:name="com.vibefoxcodding.fpnative.PickActivity"
+			android:theme="@android:style/Theme.Translucent.NoTitleBar"
+			android:exported="false"
+			android:configChanges="orientation|screenSize|keyboardHidden"/>
+		<!-- Ruffle engine: the SWF plays in a WebView (ruffle/ folder of the app) -->
+		<activity android:name="com.vibefoxcodding.fpnative.RuffleActivity"
+			android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+			android:exported="false"
+			android:screenOrientation="sensorLandscape"
+			android:hardwareAccelerated="true"
+			android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density"/>
+		<activity android:name="rs.ruffle.PlayerActivity"
+			android:process=":ruffle"
+			android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+			android:exported="false"
+			android:screenOrientation="sensorLandscape"
+			android:launchMode="standard"
+			android:excludeFromRecents="true"
+			android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+			<meta-data android:name="android.app.lib_name" android:value="ruffle_android"/>
+		</activity>
+		<provider android:name="com.vibefoxcodding.fpnative.ShareProvider"
+			android:authorities="air.com.vibefoxcodding.flashplayer.share"
+			android:exported="false"
+			android:grantUriPermissions="true"/>
+	</application>
+</manifest>
+		]]></manifestAdditions>
+	</android>
+
+	<extensions>
+		<extensionID>com.vibefoxcodding.fpnative</extensionID>
+	</extensions>
+</application>
