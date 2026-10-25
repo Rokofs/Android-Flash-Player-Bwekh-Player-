@@ -1,0 +1,69 @@
+# Ruffle (the Flash Player emulator in Rust) as a library for Bwekh Player.
+# Based on ruffle-android (https://github.com/ruffle-rs/ruffle-android, MIT / Apache-2.0),
+# changed to run in Android's own NativeActivity (no Java/Kotlin libraries needed), so it
+# can live inside the AIR app: native/android/src/rs/ruffle/PlayerActivity.java is its Java side.
+# Built by build-ruffle-native.bat into native/build/ruffle-libs/<abi>/libruffle_android.so.
+
+[package]
+# Underscore: the library is libruffle_android.so
+name = "ruffle_android"
+version = "0.1.0"
+authors = [
+    "Ruffle contributors <ruffle@ruffle.rs>",
+    "TÖRÖK Attila <torokati44@gmail.com>",
+    "Nathan Adams <dinnerbone@dinnerbone.com>",
+]
+edition = "2018"
+resolver = "2"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+
+[dependencies]
+
+# NativeActivity: android.app.NativeActivity is part of Android itself
+android-activity = { version = "0.6.1", features = ["native-activity"] }
+android_logger = "0.15.1"
+
+jni = "0.22.4"
+ndk = "0.9.0"
+
+# Have to follow Ruffle with this.
+wgpu = "30.0.1"
+
+ruffle_common = { git = "https://github.com/ruffle-rs/ruffle.git", branch = "master" }
+ruffle_core = { git = "https://github.com/ruffle-rs/ruffle.git", branch = "master", features = [
+    "audio",
+    "symphonia",
+    "mp3",
+    "nellymoser",
+    "lzma",
+    "default_compatibility_rules",
+    "default_font",
+] }
+ruffle_render = { git = "https://github.com/ruffle-rs/ruffle.git", branch = "master" }
+ruffle_render_wgpu = { git = "https://github.com/ruffle-rs/ruffle.git", branch = "master" }
+ruffle_video_software = { git = "https://github.com/ruffle-rs/ruffle.git", branch = "master" }
+# no TLS: games play from local files (https addresses just fail to load)
+ruffle_frontend_utils = { git = "https://github.com/ruffle-rs/ruffle.git", branch = "master", default-features = false, features = ["fs", "navigator"] }
+
+log = "0.4.32"
+
+# Redirect tracing to log
+tracing = {version = "0.1.44", features = ["log", "log-always"]}
+backtrace = "0.3.76"
+async-task = "4.7.1"
+
+url = "2.5.2"
+
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"]}
+
+[features]
+jpegxr = ["ruffle_core/jpegxr"]

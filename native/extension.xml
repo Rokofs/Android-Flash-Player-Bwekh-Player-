@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<extension xmlns="http://ns.adobe.com/air/extension/51.1">
+	<id>com.vibefoxcodding.fpnative</id>
+	<versionNumber>1.0.0</versionNumber>
+	<platforms>
+		<platform name="Android-ARM">
+			<applicationDeployment>
+				<nativeLibrary>fpnative.jar</nativeLibrary>
+				<initializer>com.vibefoxcodding.fpnative.FPNativeExtension</initializer>
+			</applicationDeployment>
+		</platform>
+		<platform name="Android-ARM64">
+			<applicationDeployment>
+				<nativeLibrary>fpnative.jar</nativeLibrary>
+				<initializer>com.vibefoxcodding.fpnative.FPNativeExtension</initializer>
+			</applicationDeployment>
+		</platform>
+		<platform name="default">
+			<applicationDeployment/>
+		</platform>
+	</platforms>
+</extension>
