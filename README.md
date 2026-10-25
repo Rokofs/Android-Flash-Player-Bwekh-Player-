@@ -44,6 +44,6 @@ If a game doesn't work in one engine, try another: AVM1 and Ruffle don't cover a
   <img src="pic/UX-sketch_mainmenu.png" width="45%" alt="Main menu sketch">
   <img src="pic/UX-sketch_nowplaying.png" width="45%" alt="Now playing sketch">
 </p>
-<p align="center"><i>Sketches by Manul; Claude designed the UX from them.</i></p>
+<p align="center"><i>Sketches by manule; Claude designed the UX from them.</i></p>
 
 Ruffle is © Ruffle contributors (MIT / Apache-2.0). Adobe AIR is © HARMAN.
