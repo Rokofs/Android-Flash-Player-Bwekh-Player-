@@ -4,7 +4,7 @@
 
 > Приложение было полностью написано через Claude!
 
-> Вдохновитель и бета тестер: manule
+> Вдохновитель и бета-тестер: manule
 
 Проигрыватель Flash-игр и анимаций (SWF) для Android 5+ (arm64 и arm32) на HARMAN AIR SDK. Версия **1.8.4**. [English](README.md)
 
@@ -37,5 +37,13 @@ Java-часть и нативный Ruffle уже собраны (`native\build`
 - Сохранения игр во всех движках: записываются при выходе и при сворачивании приложения.
 
 Если игра не работает в одном движке, попробуйте другой: AVM1 и Ruffle поддерживают не весь ActionScript.
+
+## UX-скетчи
+
+<p align="center">
+  <img src="pic/UX-sketch_mainmenu.png" width="45%" alt="Скетч главного меню">
+  <img src="pic/UX-sketch_nowplaying.png" width="45%" alt="Скетч экрана игры">
+</p>
+<p align="center"><i>Скетчи за авторством Манула, по ним Claude делал UX.</i></p>
 
 Ruffle © Ruffle contributors (MIT / Apache-2.0). Adobe AIR © HARMAN.
