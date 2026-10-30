@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bwekh Player on a PC (adl), for trying games without the phone: see run.ps1 -->
+<application xmlns="http://ns.adobe.com/air/application/51.1">
+	<id>com.vibefoxcodding.flashplayer.desktop</id>
+	<filename>BwekhPlayerDesktop</filename>
+	<name>Bwekh Player (PC)</name>
+	<versionNumber>1.9.2</versionNumber>
+	<initialWindow>
+		<content>BwekhPlayer.swf</content>
+		<title>Bwekh Player (PC)</title>
+		<visible>true</visible>
+		<resizable>true</resizable>
+		<width>1170</width>
+		<height>540</height>
+		<minimizable>true</minimizable>
+		<maximizable>true</maximizable>
+		<renderMode>direct</renderMode>
+		<depthAndStencil>true</depthAndStencil>
+	</initialWindow>
+	<supportedProfiles>desktop extendedDesktop mobileDevice</supportedProfiles>
+</application>
