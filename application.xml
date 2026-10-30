@@ -7,8 +7,8 @@
 	<id>com.vibefoxcodding.flashplayer</id>
 	<filename>FlashPlayer</filename>
 	<name>Bwekh Player</name>
-	<versionNumber>1.8.4</versionNumber>
-	<versionLabel>1.8.4</versionLabel>
+	<versionNumber>1.9.2</versionNumber>
+	<versionLabel>1.9.2</versionLabel>
 	<description>Plays Flash (SWF) animations and games. ActionScript 3 via Adobe AIR.</description>
 	<copyright>vibefoxcodding LLC</copyright>
 

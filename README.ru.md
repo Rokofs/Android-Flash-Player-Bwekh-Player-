@@ -6,7 +6,7 @@
 
 > Вдохновитель и бета-тестер: manule
 
-Проигрыватель Flash-игр и анимаций (SWF) для Android 5+ (arm64 и arm32) на HARMAN AIR SDK. Версия **1.8.4**. [English](README.md)
+Проигрыватель Flash-игр и анимаций (SWF) для Android 5+ (arm64 и arm32) на HARMAN AIR SDK. Версия **1.9.2**. [English](README.md)
 
 ## Движки
 
@@ -25,9 +25,18 @@ Java-часть и нативный Ruffle уже собраны (`native\build`
 - `build-native.bat` — Java-часть (`native\android\src`). Нужен JDK 17 (`winget install Microsoft.OpenJDK.17`).
 - `build-ruffle-native.bat` — нативный Ruffle (`native\ruffle-rs`). Нужны [Rust](https://rustup.rs) и NDK (Android Studio → SDK Manager → SDK Tools → NDK). Первая сборка 20–60 минут.
 
-**Ключ подписи:** если `cert.p12` нет, первая сборка создаст его (пароль `flashplayer`). Сохраните его: обновление ставится только поверх APK с тем же ключом.
+**Ключ подписи:** в архиве его нет. Первая сборка создаст `cert.p12` (пароль `flashplayer`). Сохраните его: обновление ставится только поверх APK с тем же ключом, поэтому APK с новым ключом придётся ставить вместо установленного (сначала удалить его, сохранения удалятся вместе с ним).
 
 **Логи:** поставьте `ENABLED = true` в `src/fp/Log.as` и пересоберите. Лог пишется в `Download/BwekhPlayer-log.txt` на телефоне.
+
+## Запуск на ПК
+
+Чтобы проверить игры без телефона, запустите **`tools\desktop\run.bat`** (после того как `make-apk.bat` хотя бы раз отработал: он сохраняет путь к AIR SDK в `sdk-path.txt`). Он скомпилирует плеер и откроет его в окне через `adl` из AIR SDK.
+
+- Игры (`.swf`) кладите в `tools\desktop\games` (папка создаётся при первом запуске).
+- Игры идут в AIR / AVM1; Ruffle работает только на телефоне.
+- Если логи включены, лог пишется в `BwekhPlayer-log.txt` рядом с `run.bat`.
+- При первом запуске также собирается библиотека TLF для игр из Flash CS5 (`tools\tlf`); дальше — только если её исходники менялись.
 
 ## Возможности
 
@@ -44,6 +53,6 @@ Java-часть и нативный Ruffle уже собраны (`native\build`
   <img src="pic/UX-sketch_mainmenu.png" width="45%" alt="Скетч главного меню">
   <img src="pic/UX-sketch_nowplaying.png" width="45%" alt="Скетч экрана игры">
 </p>
-<p align="center"><i>Скетчи за авторством manule, по ним Claude делал UX.</i></p>
+<p align="center"><i>Скетчи за авторством Манула, по ним Claude делал UX.</i></p>
 
 Ruffle © Ruffle contributors (MIT / Apache-2.0). Adobe AIR © HARMAN.
