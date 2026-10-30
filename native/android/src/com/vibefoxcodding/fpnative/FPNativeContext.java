@@ -304,6 +304,14 @@ public class FPNativeContext extends FREContext {
 		StringBuilder sb = new StringBuilder();
 		for (final android.view.SurfaceView sv : list) {
 			int vw = sv.getWidth(), vh = sv.getHeight();
+			if (sv.getClass().getSimpleName().indexOf("Video") >= 0) {
+				// AIR's video surface (made by a game with video, then kept for the rest of the
+				// session): never scaled, never given our touch listener — only the AIR surface is
+				sv.getHolder().setSizeFromLayout();
+				sv.setOnTouchListener(null);
+				sb.append(sv.getClass().getSimpleName()).append(" left alone; ");
+				continue;
+			}
 			if (scale < 0.999f && vw <= vh) {
 				// still the portrait layout (the screen is turning): the app asks again a bit later
 				sb.append("wait: ").append(vw).append("x").append(vh).append("; ");
