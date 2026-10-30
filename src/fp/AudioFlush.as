@@ -8,37 +8,44 @@ package fp
 	import flash.utils.Timer;
 
 	/**
-	 * Clean sound stop after a game. On some Android devices (seen on 32-bit ARM) the audio
-	 * output keeps replaying its last buffer when every sound stops at once — the game's
-	 * last noise loops forever in the menu. Flash Player never let the output go idle like
-	 * that, so neither do we: after stopping everything, play a couple of seconds of silence,
-	 * which leaves only silence in the output buffer.
+	 * Clean sound stop. On some Android devices the audio output replays its last buffer when
+	 * every sound stops at once, so after stopping everything a few seconds of silence play
+	 * (the output is left with silence in it). Only for a moment: a channel of silence playing
+	 * all the time made the sound of games stutter on slow (32-bit) phones.
 	 */
 	public class AudioFlush
 	{
 		private static var snd:Sound;
 		private static var ch:SoundChannel;
 		private static var timer:Timer;
+		/** (kept for the log) */
+		public static var restarts:int = 0;
 
+		/** a game was closed: stop everything, then silence for a moment */
 		public static function run():void
 		{
-			try { SoundMixer.stopAll(); } catch (e:Error) {}
-			stopSilence();
-			var t:Timer = new Timer(100, 1);
-			t.addEventListener(TimerEvent.TIMER, function(e:TimerEvent):void {
-				try { SoundMixer.stopAll(); } catch (e2:Error) {}
-				startSilence(2500);
-			});
-			t.start();
+			stopAll();
 		}
 
-		/** a new game is starting: the silence isn't needed any more */
+		/** SoundMixer.stopAll(), then silence for a moment */
+		public static function stopAll():void
+		{
+			try { SoundMixer.stopAll(); } catch (e:Error) {}
+			silence(2500);
+		}
+
+		/** something stopped all sounds: silence for a moment */
+		public static function keep(force:Boolean = false):void
+		{
+			silence(1500);
+		}
+
 		public static function cancel():void
 		{
 			stopSilence();
 		}
 
-		private static function startSilence(ms:int):void
+		public static function silence(ms:int):void
 		{
 			stopSilence();
 			try

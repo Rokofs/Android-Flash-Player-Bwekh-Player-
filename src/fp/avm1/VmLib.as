@@ -1,5 +1,6 @@
 package fp.avm1
 {
+	import flash.display.DisplayObjectContainer;
 	import flash.display.Graphics;
 	import flash.display.MovieClip;
 	import flash.events.Event;
@@ -18,6 +19,32 @@ package fp.avm1
 	public class VmLib
 	{
 		private var vm:Vm;
+
+		/** every SoundChannel an AVM1 game started through AIR (stopped all when a game ends) */
+		private static var liveChannels:Array = [];
+
+		private static function noteChannel(ch:SoundChannel):void
+		{
+			if (!ch) return;
+			if (liveChannels.length > 400) liveChannels.splice(0, 200);
+			liveChannels.push(ch);
+		}
+
+		/**
+		 * Nothing of a game may be heard after it: every mixer and every channel of every AVM1 game
+		 * (also one started by code that still ran while the game was being closed).
+		 */
+		public static function silenceAll():String
+		{
+			var mixers:int = SoftMixer.killAll();
+			var n:int = 0;
+			for each (var ch:SoundChannel in liveChannels)
+			{
+				try { if (ch.position > 0) n++; ch.stop(); } catch (e:Error) {}
+			}
+			liveChannels = [];
+			return mixers + " mixers, " + n + " AIR channels";
+		}
 
 		private var keys:Object = {};
 		private var lastKey:int = 0;
@@ -328,6 +355,82 @@ package fp.avm1
 			fn(mouse, "addListener", function(t:*, a:Array):* { if (mouseListeners.indexOf(a[0]) < 0) mouseListeners.push(a[0]); return true; });
 			fn(mouse, "removeListener", function(t:*, a:Array):* { var i:int = mouseListeners.indexOf(a[0]); if (i >= 0) mouseListeners.splice(i, 1); return i >= 0; });
 
+			// AsBroadcaster: AS2 classes (FLV players, mx.transitions) make event sources with it
+			// (a function: classes extend it and call super())
+			var bc:ANative = ctor("AsBroadcaster", vm.newObject(), function(t:*, a:Array):* { return undefined; });
+			var bcAdd:ANative = vm.nat("addListener", function(t:*, a:Array):* {
+				var l:Array = vm.getMember(t, "_listeners") as Array;
+				if (!l) { l = []; vm.setMember(t, "_listeners", l); }
+				var i:int = l.indexOf(a[0]);
+				if (i >= 0) l.splice(i, 1);
+				l.push(a[0]);
+				return true;
+			});
+			var bcRemove:ANative = vm.nat("removeListener", function(t:*, a:Array):* {
+				var l:Array = vm.getMember(t, "_listeners") as Array;
+				var i:int = l ? l.indexOf(a[0]) : -1;
+				if (i < 0) return false;
+				l.splice(i, 1);
+				return true;
+			});
+			var bcSend:ANative = vm.nat("broadcastMessage", function(t:*, a:Array):* {
+				var l:Array = vm.getMember(t, "_listeners") as Array;
+				if (!l || !l.length || !a.length) return undefined;
+				var name:String = str(a[0]);
+				var args:Array = a.slice(1);
+				for each (var o:* in l.concat())
+				{
+					var f:* = vm.getMember(o, name);
+					if (vm.isFunc(f)) vm.call(f, o, args);
+				}
+				return true;
+			});
+			vm.def(bc, "addListener", bcAdd);
+			vm.def(bc, "removeListener", bcRemove);
+			vm.def(bc, "broadcastMessage", bcSend);
+			fn(bc, "initialize", function(t:*, a:Array):* {
+				var o:* = a[0];
+				if (o === undefined || o === null) return undefined;
+				vm.setMember(o, "_listeners", []);
+				vm.setMember(o, "addListener", bcAdd);
+				vm.setMember(o, "removeListener", bcRemove);
+				vm.setMember(o, "broadcastMessage", bcSend);
+				return undefined;
+			});
+
+			// MovieClipLoader: loading other files isn't supported (like loadMovie): loadClip fails the
+			// way a missing file does — onLoadError a moment later — so players (945a's FLV skin
+			// preloader) go on without it
+			var mclp:AObject = new AObject(op);
+			vm.def(mclp, "addListener", bcAdd);
+			vm.def(mclp, "removeListener", bcRemove);
+			vm.def(mclp, "broadcastMessage", bcSend);
+			fn(mclp, "loadClip", function(t:*, a:Array):* {
+				var url:String = str(a[0]);
+				if (!url) return false;
+				vm.warnOnce("MovieClipLoader.loadClip isn't supported: " + url.substr(0, 60));
+				var loader:* = t;
+				var target:* = a[1];
+				var timer:Timer = new Timer(50, 1);
+				timer.addEventListener(TimerEvent.TIMER, function(e:TimerEvent):void {
+					vm.callHandler(bcSend, loader, ["onLoadError", target, "URLNotFound", 0]);
+				});
+				timer.start();
+				return true;
+			});
+			fn(mclp, "unloadClip", function(t:*, a:Array):* { if (a[0] is AClip) vm.display.unload(a[0]); return true; });
+			fn(mclp, "getProgress", function(t:*, a:Array):* {
+				var pr:AObject = vm.newObject();
+				vm.setMember(pr, "bytesLoaded", 0);
+				vm.setMember(pr, "bytesTotal", 0);
+				return pr;
+			});
+			ctor("MovieClipLoader", mclp, function(t:*, a:Array):* { return undefined; }, function(a:Array):* {
+				var o:AObject = new AObject(mclp);
+				vm.setMember(o, "_listeners", [o]); // the loader hears its own events (mcl.onLoadInit = ...)
+				return o;
+			});
+
 			var stage:AObject = vm.newObject();
 			vm.def(g, "Stage", stage);
 			stage.setAccessor(vm.key("width"), vm.nat("width", function(t:*, a:Array):* { return vm.display.root ? vm.display.root.loaderInfo.width : 550; }), null);
@@ -576,7 +679,12 @@ package fp.avm1
 		{
 			vm.soundProto = new AObject(op);
 			var p:AObject = vm.soundProto;
-			ctor("Sound", p, function(t:*, a:Array):* { return undefined; }, function(a:Array):* {
+			// (called as a function by super() in AS2 classes that extend Sound: FLV players'
+			// SoundEx — the object then needs its state too, or setVolume / mute do nothing)
+			ctor("Sound", p, function(t:*, a:Array):* {
+				if (t is AObject && !sounds[t]) sounds[t] = { target: a[0] is AClip ? a[0] : null, snd: null, ch: null, vol: 100, pan: 0, pos: 0 };
+				return undefined;
+			}, function(a:Array):* {
 				var o:AObject = new AObject(p);
 				sounds[o] = { target: a[0] is AClip ? a[0] : null, snd: null, ch: null, vol: 100, pan: 0, pos: 0 };
 				return o;
@@ -596,15 +704,17 @@ package fp.avm1
 				if (vm.debug && soundLogs++ < 40) vm.log("avm1: sound " + s.name + ".start(" + offset + ", " + loops + ")");
 				var self:* = t;
 				var v:Voice = mixer.play(s.snd as Sound, offset * 1000, loops, s.vol, s.pan);
-				if (vm.debug && soundLogs < 40) vm.log("avm1: sound " + s.name + (v ? " mixed (" + v.data.length + " bytes pcm)" : " played by AIR"));
-				if (v) { v.owner = self; s.ch = v; return undefined; }
+				if (vm.debug && soundLogs < 40) vm.log("avm1: sound " + s.name + (v ? (v.stream ? " mixed, decoded while it plays (" + mixer.lastDecode + ")" : " mixed (" + v.data.length + " bytes pcm, " + mixer.lastDecode + ")") : " played by AIR"));
+				if (v) { v.owner = self; v.name = s.name; s.ch = v; started.push({ s: s, ch: v }); return undefined; }
 				try
 				{
 					makeRoom(s.snd);
 					var ch:SoundChannel = (s.snd as Sound).play(offset * 1000, loops, new SoundTransform(s.vol / 100, s.pan / 100));
+					noteChannel(ch);
 					s.ch = ch;
 					if (ch)
 					{
+						started.push({ s: s, ch: ch });
 						channels.push({ ch: ch, snd: s.snd });
 						ch.addEventListener(Event.SOUND_COMPLETE, function(e:Event):void { forget(e.target as SoundChannel); });
 					}
@@ -619,17 +729,28 @@ package fp.avm1
 				catch (e:Error) {}
 				return undefined;
 			});
+			// As in Flash Player: stop("id") stops every playing copy of that sound, stop() every
+			// sound of the Sound's clip — of the whole movie for a Sound without one. (Stopping only
+			// the copy this Sound started last left music started twice, or by another Sound
+			// object, playing on: tracks piled up.)
 			fn(p, "stop", function(t:*, a:Array):* {
 				var s:Object = sounds[t]; if (!s) return undefined;
-				if (s.ch) { s.pos = s.ch.position; s.ch.stop(); s.ch = null; }
-				else if (!s.snd) { SoundMixer.stopAll(); clearChannels(); }
+				if (s.ch) { s.pos = s.ch.position; }
+				var id:String = a.length > 0 && a[0] !== undefined ? str(a[0]) : null;
+				if (!id && !s.target) { clearChannels(); stopStarted(null, null); s.ch = null; return undefined; }
+				stopStarted(id, s.target);
+				if (s.ch) { try { s.ch.stop(); } catch (se:Error) {} s.ch = null; }
 				return undefined;
 			});
 			fn(p, "setVolume", function(t:*, a:Array):* {
 				var s:Object = sounds[t]; if (!s) return undefined;
 				s.vol = num(a[0]);
 				if (s.ch) setLevel(s);
-				else if (!s.snd) vm.display.setVolume(s.target, s.vol);
+				else if (!s.snd)
+				{
+					vm.display.setVolume(s.target, s.vol);
+					if (!s.target && mixer) mixer.setMaster(s.vol / 100); // the whole movie: code sounds too
+				}
 				return undefined;
 			});
 			fn(p, "getVolume", function(t:*, a:Array):* { var s:Object = sounds[t]; return s ? s.vol : 100; });
@@ -902,6 +1023,62 @@ package fp.avm1
 			while (channels.length >= MAX_ALL) stopRec(channels.shift());
 		}
 
+		/** copies started by Sound.start: { s: the Sound's state, ch: Voice or SoundChannel } */
+		private var started:Array = [];
+
+		/** a clip's stream sound from ms on (VmDisplay keeps it in step with the clip) */
+		public function playStream(snd:Sound, ms:Number, name:String):Voice
+		{
+			if (vm.dead) return null;
+			var v:Voice = mixer.play(snd, ms, 1, 100, 0);
+			if (v) v.name = name;
+			return v;
+		}
+
+		/** stop the started copies of sound id (null: any) of Sound objects on target (null: any) */
+		private function stopStarted(id:String, target:*):void
+		{
+			for (var i:int = started.length - 1; i >= 0; i--)
+			{
+				var r:Object = started[i];
+				var ch:Object = r.ch;
+				var gone:Boolean = ch is Voice ? (ch as Voice).done : false;
+				if (!gone && (id == null || r.s.name == id) && (target == null || r.s.target === target))
+				{
+					try { ch.stop(); } catch (e:Error) {}
+					if (r.s.ch === ch) r.s.ch = null;
+					gone = true;
+				}
+				if (gone) started.splice(i, 1);
+			}
+			if (started.length > 300) started.splice(0, started.length - 300);
+		}
+
+		/**
+		 * A clip left the stage: as in Flash, the sounds a Sound object on it started (new Sound(clip))
+		 * stop with it — a game changes the music by leaving the scene whose clip started it.
+		 */
+		public function clipRemoved(c:AClip):void
+		{
+			if (!started.length || !c) return;
+			var box:DisplayObjectContainer = c.d as DisplayObjectContainer;
+			var n:int = 0;
+			for (var i:int = started.length - 1; i >= 0; i--)
+			{
+				var r:Object = started[i];
+				var t:AClip = r.s.target as AClip;
+				if (!t) continue;
+				var on:Boolean = t === c;
+				if (!on && box && t.d) try { on = box.contains(t.d); } catch (e:Error) {}
+				if (!on) continue;
+				try { r.ch.stop(); } catch (e2:Error) {}
+				if (r.s.ch === r.ch) r.s.ch = null;
+				started.splice(i, 1);
+				n++;
+			}
+			if (n && vm.debug) vm.log("avm1: " + n + " sound(s) stopped with the clip they were started on");
+		}
+
 		private function stopRec(r:Object):void
 		{
 			try { (r.ch as SoundChannel).stop(); } catch (e:Error) {}
@@ -929,6 +1106,8 @@ package fp.avm1
 			if (!_mixer)
 			{
 				_mixer = new SoftMixer();
+				// (a game already closed gets a silent one: code of it still running starts nothing)
+				if (vm.dead) _mixer.dispose();
 				_mixer.onComplete = function(v:Voice):void {
 					if (vm.dead || v.owner === undefined) return;
 					var f:* = vm.getMember(v.owner, "onSoundComplete");
@@ -939,6 +1118,15 @@ package fp.avm1
 		}
 
 		private var timelineSnd:Object = {};
+
+		/** stop a timeline sound started by timelineSound (a button look being hidden) */
+		public function stopTimelineSound(id:int):void
+		{
+			var snd:Sound = timelineSnd[id] as Sound;
+			if (!snd) return;
+			mixer.stopSound(snd);
+			stopNative(snd);
+		}
 
 		/** a StartSound of the timeline (SwfConvert moved it here so all sound goes through one mixer) */
 		public function timelineSound(rec:Object):void
@@ -954,10 +1142,11 @@ package fp.avm1
 			if (rec.stop) { mixer.stopSound(snd); stopNative(snd); return; }
 			if (rec.single && (mixer.isPlaying(snd) || nativePlaying(snd))) return;
 			var v:Voice = mixer.play(snd, rec.inMs, rec.loops, 100, 0);
-			if (vm.debug && soundLogs++ < 40) vm.log("avm1: timeline sound " + rec.id + (v ? " mixed" : " played by AIR") +
+			if (vm.debug && soundLogs++ < 40) vm.log("avm1: timeline sound " + rec.id + (v ? " mixed" : " played by AIR") + " (" + mixer.lastDecode + ")" +
 				(rec.env ? ", envelope " + rec.env.join(",") : "") + (rec.outMs ? ", out " + Math.round(rec.outMs) + " ms" : ""));
 			if (v)
 			{
+				v.name = "tl" + rec.id;
 				v.startPos = v.pos;
 				if (rec.outMs > 0) v.endPos = int(rec.outMs * 44.1) * 8;
 				v.env = rec.env;
@@ -969,6 +1158,7 @@ package fp.avm1
 				var st:SoundTransform = null;
 				if (rec.env) st = new SoundTransform(Math.max(rec.env[1], rec.env[2]), envPan(rec.env[1], rec.env[2]));
 				var ch:SoundChannel = snd.play(rec.inMs, rec.loops, st);
+				noteChannel(ch);
 				if (ch)
 				{
 					var cr:Object = { ch: ch, snd: snd };
@@ -1048,6 +1238,7 @@ package fp.avm1
 		/** stopAllSounds / Sound.stop() without a sound: our channels are gone too */
 		public function clearChannels():void
 		{
+			started = [];
 			if (_mixer) _mixer.stopAll();
 			for each (var r:Object in channels) stopRec(r);
 			channels = [];

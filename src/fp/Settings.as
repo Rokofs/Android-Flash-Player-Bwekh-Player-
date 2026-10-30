@@ -58,11 +58,14 @@ package fp
 		}
 
 		/** engine for a file; as3 = it's an ActionScript 3 file */
-		public function engineFor(name:String, as3:Boolean = false):String
+		public function engineFor(name:String, as3:Boolean = false, video:Boolean = false):String
 		{
 			var list:Array = enginesFor(as3);
 			var e:* = engineFiles ? engineFiles[name] : null;
 			if (list.indexOf(e) >= 0) return e;
+			// an old file with video frames in it: AIR on Android shows that video black, Ruffle
+			// decodes it (when Ruffle can't run here, the file falls back to AVM1 as usual)
+			if (video && !as3) return ENGINE_RUFFLE;
 			var def:String = as3 ? as3Engine : legacyEngine;
 			return list.indexOf(def) >= 0 ? def : list[0];
 		}

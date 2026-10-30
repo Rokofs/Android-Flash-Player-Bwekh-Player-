@@ -95,7 +95,7 @@ package fp
 				else Log.write("library: no thumbnail for " + it.name);
 				it.info = meta[it.key];
 				// "keys" / "packed" appeared in later versions — read old entries again
-				if (!it.info || (it.info.ok && it.info.scan !== 2))
+				if (!it.info || (it.info.ok && it.info.scan !== 3))
 				{
 					it.info = null;
 					queue.push(it);
@@ -128,10 +128,39 @@ package fp
 					else if (f.extension && f.extension.toLowerCase() == "swf")
 					{
 						// the same file can be reached twice (e.g. /sdcard/Download and
-						// /storage/emulated/0/Download): one entry per name + size
+						// /storage/emulated/0/Download, or the list folder inside Download):
+						// one entry per real path, and per name + size
 						var it:LibraryItem = new LibraryItem(f);
-						if (seen[it.key]) continue;
+						var real:String = realPath(f);
+						if (seen[it.key] || (real && seen["p:" + real])) continue;
+						// size unreadable through this path (0): same name as one already listed = the same file
+						var nk:String = "n:" + foldName(it.name);
+						var same:LibraryItem = seen[nk] as LibraryItem;
+						// same name (also written another way: "й" as и + a combining breve, as some
+						// downloads and file managers store it) and same size: the same file
+						if (same && it.size != same.size)
+							Log.write("library: two files named " + it.name + ": " + it.size + " / " + same.size + " bytes, " +
+								f.nativePath + " / " + same.file.nativePath);
+						if (same && (it.size <= 0 || same.size <= 0 || it.size == same.size))
+						{
+							Log.write("library: same file twice? " + it.name + " (" + it.size + " / " + same.size + " bytes): " +
+								f.nativePath + " / " + same.file.nativePath);
+							if (same.size <= 0 && it.size > 0) { list[list.indexOf(same)] = it; seen[nk] = it; seen[it.key] = true; }
+							continue;
+						}
+						// another name, same bytes (a copy renamed on the way: "ТВ" typed with Latin
+						// letters, a space that isn't one): one entry
+						var sk:String = "s:" + it.size;
+						var twin:LibraryItem = it.size > 0 ? seen[sk] as LibraryItem : null;
+						if (twin && sameBytes(f, twin.file))
+						{
+							Log.write("library: the same file under two names: " + f.nativePath + " / " + twin.file.nativePath);
+							continue;
+						}
+						if (it.size > 0 && !twin) seen[sk] = it;
 						seen[it.key] = true;
+						if (real) seen["p:" + real] = true;
+						if (!same) seen[nk] = it;
 						list.push(it);
 					}
 				}
@@ -140,6 +169,51 @@ package fp
 				}
 			}
 			return true;
+		}
+
+		/** the start and the end of two files of the same size are the same (a copy) */
+		private static function sameBytes(a:File, b:File):Boolean
+		{
+			try
+			{
+				var n:Number = a.size;
+				var part:int = int(Math.min(n, 65536));
+				for each (var at:Number in [0, Math.max(0, n - part)])
+				{
+					var x:ByteArray = new ByteArray(), y:ByteArray = new ByteArray();
+					var fa:FileStream = new FileStream(); fa.open(a, FileMode.READ); fa.position = at; fa.readBytes(x, 0, part); fa.close();
+					var fb:FileStream = new FileStream(); fb.open(b, FileMode.READ); fb.position = at; fb.readBytes(y, 0, part); fb.close();
+					if (x.length != y.length) return false;
+					for (var i:int = 0; i < x.length; i++) if (x[i] != y[i]) return false;
+				}
+				return true;
+			}
+			catch (e:Error) {}
+			return false;
+		}
+
+		/** a file name for comparing: letters with combining marks written as one (NFC-like), lower case */
+		private static function foldName(n:String):String
+		{
+			n = n.replace(/\u0438\u0306/g, "\u0439").replace(/\u0418\u0306/g, "\u0419")
+				.replace(/\u0435\u0308/g, "\u0451").replace(/\u0415\u0308/g, "\u0401")
+				.replace(/[\u0300-\u036F]/g, "").replace(/[\u00A0\u2000-\u200B\u202F]/g, " ");
+			return n.toLowerCase();
+		}
+
+		/** the file's path with links resolved (/sdcard -> /storage/emulated/0), or null */
+		private static function realPath(f:File):String
+		{
+			try
+			{
+				var c:File = new File(f.nativePath);
+				c.canonicalize();
+				return c.nativePath;
+			}
+			catch (e:Error)
+			{
+			}
+			return null;
 		}
 
 		/** Take over the thumbnail and header info stored under the old key. */
@@ -203,7 +277,7 @@ package fp
 					w: si.width, h: si.height,
 					fps: si.frameRate, frames: si.frameCount,
 					as3: si.isAS3, bg: si.bgColor, ver: si.version,
-					keys: si.usesKeys, packed: si.packed, scan: 2
+					keys: si.usesKeys, packed: si.packed, video: si.hasVideo, scan: 3
 				};
 			}
 			catch (err:Error)

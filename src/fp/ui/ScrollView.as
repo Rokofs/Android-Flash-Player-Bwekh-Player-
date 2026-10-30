@@ -28,7 +28,15 @@
 		private var _vel:Number = 0;
 		private var _scroll:Number = 0;
 		private var _barAlpha:Number = 0;
+		private var _scrolledOnce:Boolean = false;
 		public var bottomPadding:Number = 0;
+		/** height of the content when the owner knows it (>= 0): measuring 75 cards on every move is slow */
+		public var contentHeight:Number = -1;
+
+		private function get totalHeight():Number
+		{
+			return (contentHeight >= 0 ? contentHeight : content.height) + bottomPadding;
+		}
 
 		public function ScrollView()
 		{
@@ -38,6 +46,8 @@
 			addEventListener(MouseEvent.CLICK, onClickCapture, true, 100);
 			addEventListener(MouseEvent.MOUSE_WHEEL, onWheel);
 		}
+
+		public function get viewHeight():Number { return _h; }
 
 		public function setSize(w:Number, h:Number):void
 		{
@@ -53,14 +63,17 @@
 
 		public function get maxScroll():Number
 		{
-			return Math.max(0, content.height + bottomPadding - _h);
+			return Math.max(0, totalHeight - _h);
 		}
 
 		public function scrollTo(v:Number):void
 		{
 			_scroll = Math.max(0, Math.min(maxScroll, v));
-			content.y = -Math.round(_scroll);
+			var ny:Number = -Math.round(_scroll);
+			var moved:Boolean = ny != content.y;
+			content.y = ny;
 			drawBar();
+			if (moved || !_scrolledOnce) { _scrolledOnce = true; dispatchEvent(new Event(Event.SCROLL)); }
 		}
 
 		private function onWheel(e:MouseEvent):void
@@ -160,7 +173,7 @@
 		private function drawBar():void
 		{
 			_bar.graphics.clear();
-			var total:Number = content.height + bottomPadding;
+			var total:Number = totalHeight;
 			if (_barAlpha <= 0 || total <= _h) return;
 			var bh:Number = Math.max(M.px(32), _h * _h / total);
 			var by:Number = (_h - bh) * (_scroll / Math.max(1, maxScroll));

@@ -1,5 +1,6 @@
 package fp.avm1
 {
+	import fp.AudioFlush;
 	import flash.display.DisplayObject;
 	import flash.display.Loader;
 	import flash.events.Event;
@@ -324,7 +325,10 @@ package fp.avm1
 				if (n == "length") return arr.length;
 				var idx:Number = Number(n);
 				if (n != "" && !isNaN(idx) && idx >= 0 && idx == Math.floor(idx)) return arr[int(idx)];
-				if (AObject.HOP.call(arr, n)) return arr[n];
+				// (arr.hasOwnProperty, not Object.prototype.hasOwnProperty.call(arr, n): that one says
+				// false in AIR for an array's own dynamic properties — arguments.callee was lost and
+				// mx.utils.Delegate failed: 945a's player buttons never got their handlers)
+				if (arr.hasOwnProperty(n)) return arr[n];
 				return protoGet(arrayProto, n);
 			}
 			if (obj is Date) return protoGet(dateProto, n);
@@ -568,8 +572,11 @@ package fp.avm1
 			{
 				if (warnedCalls[n]) return undefined; // already told (building the message is slow)
 				warnedCalls[n] = true;
+				// the AS2 compiler's getter for a set-only property calls a __get__ that doesn't exist:
+				// Flash says nothing either
+				if (n.indexOf("__get__") == 0) return undefined;
 				warnOnce("not a function: " + n + " on " + typeOf(obj) + " " + (obj is AClip ? display.targetPath(obj, true) : toStr(obj)) +
-					(debug && (obj === undefined || obj === null) ? " (last missing: " + lastMissing + ")" : ""));
+					(debug && (obj === undefined || obj === null) ? " (last missing: " + lastMissing + ")" + whereNow() : "") + (obj is AObject ? " keys " + (obj as AObject).order.slice(0, 12).join(",") + (obj.proto ? " proto " + obj.proto.order.slice(0, 12).join(",") : "") : ""));
 				return undefined;
 			}
 			return call(f, obj, args, h);
@@ -628,7 +635,7 @@ package fp.avm1
 				var fl:int = f.flags;
 				// (this / arguments / super not in registers: getVariable finds them when asked)
 				if (fl & 0x01) c.regs[r++] = thisObj;                         // this
-				if (fl & 0x04) c.regs[r++] = args.concat();                 // arguments
+				if (fl & 0x04) c.regs[r++] = argsObject(args, f);           // arguments
 				if (fl & 0x10) c.regs[r++] = makeSuper(c);                  // super
 				if (fl & 0x40) c.regs[r++] = display.rootClip;              // _root
 				if (fl & 0x80) c.regs[r++] = display.parentOf(base);        // _parent
@@ -642,6 +649,10 @@ package fp.avm1
 			}
 			if (hcount) { hcount["calls"] = (hcount["calls"] | 0) + 1; hcount["t_callSetup"] = (hcount["t_callSetup"] | 0) + getTimer() - tSetup; }
 			callDepth++;
+			var outerFunc:AFunction = curFunc;
+			var outerCtx:Ctx = curCtx;
+			curFunc = f;
+			curCtx = c;
 			try
 			{
 				var cf:Function = compiledOn ? compiledFor(f.code, f.start) : null;
@@ -652,15 +663,48 @@ package fp.avm1
 				}
 				else
 				{
-					if (debug && compiled[f.code] && !missWarned[f.code + ":" + f.start]) { missWarned[f.code + ":" + f.start] = true; log("avm1: not compiled: function " + f.name + " at " + f.start + "-" + f.end + " of block@" + data.origins[f.code]); }
+					// (key: the start offset per code block — "f.code + ..." made a string of the whole
+					// file every call: 130 ms per call on a 7 MB SWF)
+					if (debug && compiled[f.code] && !missedFor(f.code, f.start)) { log("avm1: not compiled: function " + f.name + " at " + f.start + "-" + f.end + " of block@" + data.origins[f.code]); }
 					exec(f.code, f.start, f.end, c);
 				}
 			}
 			finally
 			{
 				callDepth--;
+				curFunc = outerFunc;
+				curCtx = outerCtx;
 			}
 			return c.ret;
+		}
+
+		/** the AS function running now (for the log) */
+		public var curFunc:AFunction;
+
+		public var curCtx:Ctx;
+
+		private function whereNow():String
+		{
+			if (!curFunc) return "";
+			var rs:String = "";
+			try
+			{
+				if (curCtx && curCtx.regs)
+					for (var ri:int = 0; ri < curCtx.regs.length && ri < 6; ri++)
+					{
+						var rv:* = curCtx.regs[ri];
+						rs += " r" + ri + "=" + typeOf(rv);
+						if (rv is Array)
+						{
+							var ks:Array = [];
+							for (var rk:String in rv) ks.push(rk);
+							rs += "(len " + (rv as Array).length + ", keys " + ks.join("/") + ", callee " + typeOf(rv["callee"]) + ", hop " + (rv as Array).hasOwnProperty("callee") + ")";
+						}
+					}
+				rs += " flags 0x" + curFunc.flags.toString(16) + " regCount " + curFunc.regCount + (compiledOn && compiledFor(curFunc.code, curFunc.start) != null ? " compiled" : " interpreted");
+			}
+			catch (re:Error) { rs += " (" + re.message + ")"; }
+			return " [in function " + (curFunc.name || "(anonymous)") + " at " + curFunc.start + " of block@" + data.origins[curFunc.code] + rs + "]";
 		}
 
 		private function makeSuper(c:Ctx):ASuper
@@ -735,12 +779,21 @@ package fp.avm1
 				}
 			}
 			if (kind == VK_SUPER) return makeSuper(c);
+			if (kind == VK_ARGUMENTS && !c.func && debug) warnOnce("\"arguments\" asked outside a function" + whereNow());
 			if (kind == VK_ARGUMENTS && c.func)
 			{
-				if (!c.argsCopy) c.argsCopy = c.args ? c.args.concat() : [];
+				if (!c.argsCopy) c.argsCopy = argsObject(c.args, c.func);
 				return c.argsCopy;
 			}
 			return undefined;
+		}
+
+		/** the "arguments" array, with arguments.callee (mx.utils.Delegate reads its target from it) */
+		public static function argsObject(args:Array, f:*):Array
+		{
+			var a:Array = args ? args.concat() : [];
+			if (f) a["callee"] = f;
+			return a;
 		}
 
 		/** scope object the last plain getVariable found its value on */
@@ -868,7 +921,7 @@ package fp.avm1
 		public function runOn(clip:AClip, code:ByteArray, thisObj:* = undefined):void
 		{
 			if (dead) return;
-			if (debug && debugRuns++ < debugLimit) log("avm1: run " + code.length + " bytes on " + (clip ? clip.d + " #" + clip.spriteId + " frame " + ((clip.d as MovieClip) ? (clip.d as MovieClip).currentFrame : 0) : "null"));
+			if (debug && (debugRuns++ < debugLimit || (clip && clip.spriteId == 0))) log("avm1: run " + code.length + " bytes on " + (clip ? clip.d + " #" + clip.spriteId + " frame " + ((clip.d as MovieClip) ? (clip.d as MovieClip).currentFrame : 0) : "null"));
 			var c:Ctx = new Ctx();
 			c.version = version;
 			c.target = c.baseTarget = clip;
@@ -1531,7 +1584,17 @@ package fp.avm1
 			if (warnedCompile++ < 5) log("avm1: compiled code rejected: " + e);
 		}
 		private var warnedCompile:int = 0;
-		private var missWarned:Object = {};
+		private var missWarned:Dictionary = new Dictionary(true);
+
+		/** false the first time (then remembered): a function of this code block that isn't compiled */
+		private function missedFor(code:ByteArray, start:int):Boolean
+		{
+			var m:Object = missWarned[code];
+			if (!m) missWarned[code] = m = {};
+			if (m[start]) return true;
+			m[start] = true;
+			return false;
+		}
 
 		private static function isVerifyError(e:Error):Boolean
 		{

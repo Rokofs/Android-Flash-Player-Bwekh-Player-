@@ -121,7 +121,7 @@
 			catch (e:Error)
 			{
 			}
-			return "1.8.4";
+			return "1.9.2";
 		}
 
 		/** native Ruffle (version written by make-apk) or the web build in the WebView */

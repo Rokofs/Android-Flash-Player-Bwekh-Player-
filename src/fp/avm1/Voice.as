@@ -7,7 +7,13 @@ package fp.avm1
 	public class Voice
 	{
 		public var snd:Sound;
+		/** what it is (for the log) */
+		public var name:String;
 		public var data:ByteArray;
+		/** a long sound decoded block by block while it plays (data is null) */
+		public var stream:Boolean = false;
+		/** its length in bytes (8 per stereo sample) */
+		public var streamLen:int = 0;
 		/** byte offset into data (8 bytes per stereo sample) */
 		public var pos:int = 0;
 		public var loops:int = 1;

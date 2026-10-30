@@ -16,6 +16,8 @@ package fp.ui
 		public static const RESTART:String = "pmRestart";
 		public static const SEEK:String = "pmSeek";
 		public static const GAMEPAD:String = "pmGamepad";
+		/** "Keyboard": the phone's keyboard, its keys go to the game */
+		public static const KEYBOARD:String = "pmKeyboard";
 
 		private var _scrim:Sprite;
 		private var _card:Sprite;
@@ -27,6 +29,7 @@ package fp.ui
 		private var _exit:TextButton;
 		private var _restart:TextButton;
 		private var _pad:TextButton;
+		private var _kb:TextButton;
 
 		private var _fps:Number = 24;
 		private var _frames:int = 1;
@@ -70,8 +73,20 @@ package fp.ui
 
 		/** frame is 1-based; frames = total frames of the main timeline (<= 1 means not seekable). */
 		/** padState: 1 = gamepad shown (offer "hide"), 0 = hidden (offer "show"), -1 = gamepad off in settings */
-		public function open(title:String, frame:int, frames:int, fps:Number, seekable:Boolean, totalSeconds:Number, padState:int = -1):void
+		public function open(title:String, frame:int, frames:int, fps:Number, seekable:Boolean, totalSeconds:Number, padState:int = -1,
+			keyboard:Boolean = false):void
 		{
+			if (_kb)
+			{
+				_card.removeChild(_kb);
+				_kb = null;
+			}
+			if (keyboard)
+			{
+				_kb = new TextButton("Keyboard");
+				_kb.addEventListener(MouseEvent.CLICK, function(e:MouseEvent):void { dispatchEvent(new Event(KEYBOARD)); });
+				_card.addChild(_kb);
+			}
 			if (_pad)
 			{
 				_card.removeChild(_pad);
@@ -159,11 +174,19 @@ package fp.ui
 				_note.y = y + M.px(6);
 				if (_note.visible) y = _note.y + _note.height + M.px(10);
 			}
-			if (_pad)
+			if (_pad || _kb)
 			{
-				_pad.x = M.px(8);
-				_pad.y = y;
-				y += _pad.h + M.px(4);
+				var bx:Number = M.px(8);
+				var bh:Number = 0;
+				for each (var b:TextButton in [_pad, _kb])
+				{
+					if (!b) continue;
+					b.x = bx;
+					b.y = y;
+					bx += b.w + M.px(8);
+					bh = Math.max(bh, b.h);
+				}
+				y += bh + M.px(4);
 			}
 			y += M.px(8);
 			_cont.x = cw - _cont.w - M.px(12);

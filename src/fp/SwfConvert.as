@@ -15,6 +15,7 @@ package fp
 	import fp.avm1.Avm1Data;
 	import fp.avm1.Vm;
 	import fp.avm1.KeyScan;
+	import fp.avm1.Deobfuscator;
 
 	/**
 	 * Old Flash files (ActionScript 1/2) on AIR for Android, which has no AVM1.
@@ -29,10 +30,15 @@ package fp
 	 */
 	public class SwfConvert
 	{
+		/** what the de-obfuscator did ("" when the code wasn't obfuscated) */
+		public var deobInfo:String = "";
+
 		/** converted SWF (uncompressed FWS), null when the input isn't a SWF */
 		public var swf:ByteArray;
 		public var totalFrames:int = 0;
 		public var droppedScripts:int = 0;
+		/** clips' stream sounds the AVM1 engine plays */
+		public var vmStreams:int = 0;
 		/** empty SoundStreamHead tags removed */
 		public var droppedStreams:int = 0;
 		/** timeline StartSound tags handed to the AVM1 engine */
@@ -72,6 +78,14 @@ package fp
 			src.position = 3;
 			var version:int = src.readUnsignedByte();
 			src.position = 0;
+			if (keepCode)
+			{
+				// obfuscated AS2 (state-machine dispatchers, code hidden in other tags): decode it first
+				var clean:ByteArray = null;
+				try { clean = Deobfuscator.run(body, version); } catch (de:Error) { Deobfuscator.info = "decoder error " + de.message; }
+				c.deobInfo = Deobfuscator.info;
+				if (clean) body = clean;
+			}
 			c.version = version;
 			Vm.stringVersion = version;
 			if (keepCode)
@@ -279,17 +293,57 @@ package fp
 						}
 						writeTag(out, code, data);
 						break;
+					case 19: // SoundStreamBlock
+						if (tl.noStream) break;   // made an event sound (button look, see prescan)
+						if (tl.vmStream)
+						{
+							// the AVM1 engine plays it (see SoundStreamHead below)
+							if (data.length > 4)
+							{
+								var vs:Object = tl.vmStream;
+								if (vs.first < 0) vs.first = frame;
+								vs.at[frame] = vs.samples;
+								vs.samples += data[0] | (data[1] << 8);
+								vs.mp3.writeBytes(data, 4, data.length - 4);
+								vs.last = frame;
+							}
+							break;
+						}
+						writeTag(out, code, data);
+						break;
 					case 18: // SoundStreamHead
 					case 45: // SoundStreamHead2
+						if (tl.noStream) break;
+						// a clip's own stream sound (a character's voice): our engine plays it, in
+						// step with the clip, through its mixer. AIR's own stream kept playing clips
+						// of a closed game — heard in the next one, where nothing could stop it.
+						if (!tl.top && this.data && data.length >= 4 && ((data[1] >> 4) & 15) == 2 &&
+							(data[2] | (data[3] << 8)) > 0)
+						{
+							var mp3:ByteArray = new ByteArray();
+							tl.vmStream = { rate: [5512.5, 11025, 22050, 44100][(data[1] >> 2) & 3],
+								perFrame: data[2] | (data[3] << 8), mp3: mp3, at: {}, samples: 0, first: -1, last: -1 };
+							break;
+						}
 						// Flash writes an empty stream header into every timeline. Flash Player
 						// ignores it, but AIR on Android can open a stream for it that never gets
 						// data and replays its buffer forever (the stuck sound): drop empty ones
 						if (data.length >= 4 && (data[2] | (data[3] << 8)) == 0) { droppedStreams++; break; }
+						if (tl.top && this.data) this.data.rootStream = true;
 						writeTag(out, code, data);
 						break;
 					case 39: // DefineSprite: id, frame count, then its own tags
 						var id:int = data[0] | (data[1] << 8);
-						var sub:Object = { top: false, id: id, depths: {}, scripts: {}, hasButton: {} };
+						var sub:Object = { top: false, id: id, depths: {}, scripts: {}, hasButton: {}, noStream: lookSoundTags[id] != null };
+						if (lookSoundTags[id])
+						{
+							// linked in a SymbolClass tag of its own: if AIR doesn't take this sound,
+							// the frame's other symbols (the button itself) still get their classes
+							var lsd:ByteArray = lookSoundTags[id];
+							var lsid:int = lsd[0] | (lsd[1] << 8);
+							writeTag(out, 14, lsd);
+							writeTag(out, 76, AbcGen.symbolClassTag([[lsid, AbcGen.SOUND + lsid]]));
+						}
 						if (this.data) this.data.spriteFrames[id] = data[2] | (data[3] << 8);
 						noteSymbol(id);
 						var spr:ByteArray = new ByteArray();
@@ -299,6 +353,11 @@ package fp
 						var sprBase:int = tagBase;
 						spr.writeBytes(rewriteTags(data, data.length, sub, sprBase));
 						tagBase = sprBase;
+						if (sub.vmStream && sub.vmStream.first > 0 && sub.vmStream.mp3.length)
+						{
+							this.data.streams[id] = sub.vmStream;
+							vmStreams++;
+						}
 						for (var sk:String in sub.scripts)
 						{
 							spriteScripts[id] = sub.scripts;
@@ -804,6 +863,9 @@ package fp
 			var nbits:int = body[0] >> 3;
 			body.position = Math.ceil((5 + nbits * 4) / 8) + 4;
 			var classes:Array = [];
+			var sprites:Object = {};     // id -> [start, len]
+			var looks:Object = {};       // characters shown in button states
+			var maxId:int = 0;
 			while (body.bytesAvailable >= 2)
 			{
 				var header:uint = body.readUnsignedShort();
@@ -815,16 +877,142 @@ package fp
 				if (len >= 2)
 				{
 					var id:int = body[start] | (body[start + 1] << 8);
-					if (code == 39) { data.kinds[id] = "sprite"; classes.push(AbcGen.SPRITE + id); }
+					if (DEFINE_TAGS.indexOf(code) >= 0 && id > maxId) maxId = id;
+					if (code == 7 || code == 34) buttonLooks(body, start, len, code == 34, looks);
+					if (code == 39) { data.kinds[id] = "sprite"; classes.push(AbcGen.SPRITE + id); sprites[id] = [start, len]; }
 					else if (code == 7 || code == 34) { data.kinds[id] = "button"; classes.push(AbcGen.BUTTON + id); }
-					else if (code == 14) { data.kinds[id] = "sound"; classes.push(AbcGen.SOUND + id); }
+					else if (code == 14)
+					{
+						data.kinds[id] = "sound"; classes.push(AbcGen.SOUND + id);
+						keepMp3(id, body, start, len);
+					}
 					else if (code == 48 || code == 75) { data.kinds[id] = "font"; classes.push(AbcGen.FONT + id); data.fonts.push(id); }
 				}
 				if (code == 0) break;
 				body.position = start + len;
 			}
+			// a clip inside a button with its own stream sound (Masyanya talking while the mouse is on
+			// her): AIR builds every look of a button at once, so that stream ran in the background,
+			// and on Android it could block the main timeline's stream. Made an event sound that the
+			// AVM1 engine starts / stops with the look (MP3 only).
+			// new ids after the file's own (65535 is no good: AIR then left the button unlinked)
+			var nextId:int = maxId + 1;
+			for (var lk:String in looks)
+			{
+				var sp:Array = sprites[lk];
+				if (!sp || nextId >= 65535) continue;
+				try
+				{
+					var snd:ByteArray = streamToSound(body, sp[0] + 4, sp[0] + sp[1], nextId);
+					if (!snd) continue;
+					lookSoundTags[int(lk)] = snd;
+					keepMp3(nextId, snd, 0, snd.length);
+					data.kinds[nextId] = "sound";
+					classes.push(AbcGen.SOUND + nextId);
+					data.lookSounds[int(lk)] = { id: nextId, stop: false, single: false, loops: 1, inMs: 0, outMs: 0, env: null };
+					nextId++;
+				}
+				catch (se:Error) {}
+			}
 			body.position = 0;
 			abcTag = AbcGen.doAbcTag(AbcGen.build(classes));
+		}
+
+		/** tags that define a character (its id first) */
+		private static const DEFINE_TAGS:Array = [2, 6, 7, 10, 11, 14, 20, 21, 22, 32, 33, 34, 35, 36, 37, 39, 46, 48, 60, 62, 75, 83, 84, 87, 90, 91];
+
+		/** sprite id -> DefineSound tag body made from its stream sound (see prescan) */
+		private var lookSoundTags:Object = {};
+
+		/** characters in the up / over / down looks of DefineButton (7) / DefineButton2 (34) */
+		private static function buttonLooks(body:ByteArray, start:int, len:int, two:Boolean, out:Object):void
+		{
+			try
+			{
+				var d:ByteArray = new ByteArray();
+				d.writeBytes(body, start, len);
+				var p:int = two ? 5 : 2;
+				while (p < d.length && d[p] != 0)
+				{
+					var f:int = d[p];
+					var cid:int = d[p + 1] | (d[p + 2] << 8);
+					if (f & 0x07) out[cid] = true;
+					var br:BitReader = new BitReader(d, p + 5);
+					br.skipMatrix();
+					if (two)
+					{
+						br.skipCxformAlpha();
+						if (f & 0x10) br.skipFilters();
+						if (f & 0x20) br.skipBytes(1);
+					}
+					p = br.bytePos;
+				}
+			}
+			catch (e:Error) {}
+		}
+
+		/**
+		 * The MP3 frames of a DefineSound (id, format, samples, seek, frames). The AVM1 engine makes
+		 * its Sound from these, not from the SWF's sound symbol: AIR keeps what it decoded of a
+		 * symbol (Sound.extract) under its character id, and a later game's sound with the same id
+		 * played that — the previous game's music instead of a cat's meow.
+		 */
+		private function keepMp3(id:int, b:ByteArray, start:int, len:int):void
+		{
+			if (len < 10 || ((b[start + 2] >> 4) & 15) != 2) return;
+			var m:ByteArray = new ByteArray();
+			m.writeBytes(b, start + 9, len - 9);
+			data.mp3[id] = m;
+			// where the sound really is in the decoded MP3: Flash skips the encoder's delay at the
+			// start (SeekSamples) and plays SampleCount samples — not the padding of the last
+			// frame. A loop with that silence in it had a gap every time round.
+			var rate:Number = [5512.5, 11025, 22050, 44100][(b[start + 2] >> 2) & 3];
+			var count:uint = b[start + 3] | (b[start + 4] << 8) | (b[start + 5] << 16) | (b[start + 6] << 24);
+			var seek:int = b[start + 7] | (b[start + 8] << 8);
+			if (seek > 32767) seek -= 65536;
+			data.mp3Trim[id] = { skip: Math.max(0, Math.round(seek * 44100 / rate)), count: Math.round(count * 44100 / rate) };
+		}
+
+		/** DefineSound body (id, format, samples, data) from a sprite's MP3 stream, or null */
+		private static function streamToSound(body:ByteArray, from:int, end:int, newId:int):ByteArray
+		{
+			var fmt:int = -1;
+			var mp3:ByteArray = new ByteArray();
+			mp3.endian = Endian.LITTLE_ENDIAN;
+			var samples:uint = 0;
+			var seek:int = -1;
+			var p:int = from;
+			while (p + 2 <= end)
+			{
+				var h:int = body[p] | (body[p + 1] << 8);
+				p += 2;
+				var code:int = h >> 6;
+				var len:int = h & 0x3F;
+				if (len == 0x3F) { len = body[p] | (body[p + 1] << 8) | (body[p + 2] << 16) | (body[p + 3] << 24); p += 4; }
+				if (p + len > end) break;
+				if ((code == 18 || code == 45) && len >= 4)
+				{
+					fmt = body[p + 1];
+					if ((fmt >> 4) != 2) return null;   // not MP3
+				}
+				else if (code == 19 && fmt >= 0 && len > 4)
+				{
+					samples += body[p] | (body[p + 1] << 8);
+					if (seek < 0) seek = body[p + 2] | (body[p + 3] << 8);
+					mp3.writeBytes(body, p + 4, len - 4);
+				}
+				p += len;
+				if (code == 0) break;
+			}
+			if (fmt < 0 || mp3.length == 0 || samples == 0) return null;
+			var t:ByteArray = new ByteArray();
+			t.endian = Endian.LITTLE_ENDIAN;
+			t.writeShort(newId);
+			t.writeByte(fmt);
+			t.writeUnsignedInt(samples);
+			t.writeShort(seek < 0 ? 0 : seek);
+			t.writeBytes(mp3);
+			return t;
 		}
 
 		/** A symbol was defined on the main timeline: link it to its class at the end of the frame. */

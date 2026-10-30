@@ -21,6 +21,12 @@ package fp.avm1
 		public var placedTextVars:Object = {};
 		/** export (linkage) name -> character id */
 		public var exports:Object = {};
+		/** sprite id -> its stream sound: { rate, perFrame, mp3, at: {frame: first sample}, first, last } */
+		public var streams:Object = {};
+		/** character id -> MP3 frames of a DefineSound (the engine makes its Sound from them) */
+		public var mp3:Object = {};
+		/** character id -> { skip, count } in 44.1 kHz samples: the sound within its decoded MP3 */
+		public var mp3Trim:Object = {};
 		/** character id -> "sprite" | "button" | "sound" */
 		public var kinds:Object = {};
 		/** ids of DefineFont2/3 fonts (each has a fp_f_<id> class) */
@@ -73,6 +79,13 @@ package fp.avm1
 		{
 			if (code && offset >= 0) origins[code] = offset;
 		}
+
+		/** sprite id -> timeline sound record: the stream sound of a clip shown inside a button,
+		 *  turned into an event sound (started / stopped with the button's look, see VmDisplay) */
+		public var lookSounds:Object = {};
+
+		/** the main timeline has a stream sound (a cartoon's voices) */
+		public var rootStream:Boolean = false;
 
 		/** sprite id -> { frame -> [{id, stop, single, loops, inMs}] } — timeline event sounds (StartSound) */
 		public var frameSounds:Object = {};

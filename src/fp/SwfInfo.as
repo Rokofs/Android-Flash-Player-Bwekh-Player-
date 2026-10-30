@@ -24,6 +24,8 @@ package fp
 		public var usesKeys:Boolean = true;
 		/** MochiCrypt-packed: the real game is encrypted inside (SwfUnpack can get it out) */
 		public var packed:Boolean = false;
+		/** video frames in the file (DefineVideoStream + VideoFrame): AIR on Android shows them black */
+		public var hasVideo:Boolean = false;
 
 		public static function parse(src:ByteArray):SwfInfo
 		{
@@ -100,6 +102,7 @@ package fp
 			b.position = Math.ceil(bitPos / 8);
 			info.frameRate = b.readUnsignedShort() / 256; // формат 8.8
 			info.frameCount = b.readUnsignedShort();
+			var startPos:int = b.position;
 
 			var sawFileAttributes:Boolean = false;
 			var sawAbc:Boolean = false;
@@ -146,6 +149,29 @@ package fp
 
 			if (!sawFileAttributes) info.isAS3 = sawAbc;
 			else if (sawAbc) info.isAS3 = true;
+			info.hasVideo = videoFrames(b, startPos);
+		}
+
+		/** the main timeline has embedded video (a VideoFrame tag) — walks the top-level tags */
+		private static function videoFrames(b:ByteArray, p:int):Boolean
+		{
+			var guard:int = 0;
+			while (p + 2 <= b.length && guard++ < 300000)
+			{
+				b.position = p;
+				var header:uint = b.readUnsignedShort();
+				var code:uint = header >> 6;
+				var len:uint = header & 0x3F;
+				if (len == 0x3F)
+				{
+					if (b.bytesAvailable < 4) break;
+					len = b.readUnsignedInt();
+				}
+				if (code == 61) return true;
+				if (code == 0) break;
+				p = b.position + len;
+			}
+			return false;
 		}
 
 		/**

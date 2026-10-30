@@ -4,6 +4,7 @@
 	import flash.display.Sprite;
 	import flash.events.Event;
 	import flash.text.TextField;
+	import flash.utils.Dictionary;
 
 	import fp.Library;
 	import fp.LibraryItem;
@@ -43,6 +44,7 @@
 			_empty.addChild(_emptyText);
 			addChild(_empty);
 
+			_scroll.addEventListener(Event.SCROLL, updateVisible);
 			_lib.addEventListener(Event.CHANGE, onListChanged);
 			_lib.addEventListener(Library.ITEM_UPDATED, onItemUpdated);
 		}
@@ -73,21 +75,43 @@
 			rebuild();
 		}
 
+		/** cards of the items, kept between rebuilds (a new list only adds and removes cards) */
+		private var _byItem:Dictionary = new Dictionary();
+
 		public function rebuild():void
 		{
 			var y:Number = _scroll.content.y;
 			_scroll.content.removeChildren();
+			var old:Dictionary = _byItem;
+			_byItem = new Dictionary();
 			_cards = [];
 			for each (var it:LibraryItem in _lib.items)
 			{
-				var card:FileCard = new FileCard(it, cardWidth, _scroll, play, share, menu);
+				var card:FileCard = old[it] as FileCard;
+				if (card) delete old[it];
+				else
+				{
+					card = new FileCard(it, cardWidth, _scroll, play, share, menu);
+					refreshCard(card);
+				}
+				_byItem[it] = card;
 				_scroll.content.addChild(card);
 				_cards.push(card);
-				refreshCard(card);
 			}
+			for each (var gone:FileCard in old) gone.dispose();
 			_empty.visible = _cards.length == 0;
 			positionCards();
 			_scroll.scrollTo(-y);
+			updateVisible();
+		}
+
+		/** only the cards on screen are drawn (the rest are skipped by the renderer) */
+		private function updateVisible(e:Event = null):void
+		{
+			var top:Number = -_scroll.content.y - M.px(120);
+			var bottom:Number = -_scroll.content.y + _scroll.viewHeight + M.px(120);
+			for each (var c:FileCard in _cards)
+				c.visible = c.y + c.cardHeight >= top && c.y <= bottom;
 		}
 
 		private function get cardWidth():Number
@@ -107,8 +131,10 @@
 				y += c.cardHeight + M.px(12);
 			}
 			// extra space at the end so the last card isn't glued to the bottom bar
+			_scroll.contentHeight = y;
 			_scroll.bottomPadding = M.px(32);
 			_scroll.scrollTo(-_scroll.content.y);
+			updateVisible();
 		}
 
 		private function onItemUpdated(e:Event):void

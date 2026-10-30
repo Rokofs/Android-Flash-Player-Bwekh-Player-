@@ -91,7 +91,8 @@
 			settings = new Settings();
 			settings.load();
 			nativeExt = new NativeBridge();
-			Log.init(nativeExt.externalFilesDir());
+			// (on a PC, tools/desktop: the log goes next to the app, BwekhPlayer-log.txt)
+			Log.init(onDesktop ? new File(File.applicationDirectory.nativePath).nativePath : nativeExt.externalFilesDir());
 			Log.write("native extension: " + nativeExt.available + ", screen " + stage.stageWidth + "x" + stage.stageHeight + ", dpi " + Capabilities.screenDPI);
 			nativeExt.addEventListener(StatusEvent.STATUS, onNativeStatus);
 
@@ -106,8 +107,8 @@
 			listScreen.onPlay = function(it:LibraryItem):void { play(it); };
 			listScreen.onShare = share;
 			listScreen.onMenu = itemMenu;
-			FileCard.legacyEngine = function(name:String, as3:Boolean = false):String {
-				var en:String = settings.engineFor(name, as3);
+			FileCard.legacyEngine = function(name:String, as3:Boolean = false, video:Boolean = false):String {
+				var en:String = settings.engineFor(name, as3, video);
 				return Settings.engineName(en);
 			};
 			ui.addChild(listScreen);
@@ -174,10 +175,17 @@
 
 		// ================================================================= Download folder
 
+		/** run on a PC (tools/desktop/run.ps1) instead of the phone: for trying games quickly */
+		private static function get onDesktop():Boolean
+		{
+			return Capabilities.manufacturer.indexOf("Android") < 0;
+		}
+
 		private function get downloadsDir():File
 		{
 			try
 			{
+				if (onDesktop) return File.userDirectory.resolvePath("Downloads");
 				var d:File = new File("/storage/emulated/0/Download");
 				if (d.exists) return d;
 				return new File("/sdcard/Download");
@@ -218,6 +226,17 @@
 
 		private function get defaultListDir():File
 		{
+			if (onDesktop)
+			{
+				// the "games" folder next to the desktop app
+				try
+				{
+					var g:File = new File(File.applicationDirectory.nativePath).resolvePath("games");
+					if (!g.exists) g.createDirectory();
+					return g;
+				}
+				catch (de:Error) {}
+			}
 			var ext:String = nativeExt.externalFilesDir();
 			if (ext)
 			{
@@ -443,7 +462,7 @@
 			var engineOption:String = null;
 			if (it.info && it.info.ok)
 			{
-				engineOption = "Engine: " + Settings.engineName(settings.engineFor(it.name, it.info.as3 === true)) + "…";
+				engineOption = "Engine: " + Settings.engineName(settings.engineFor(it.name, it.info.as3 === true, it.info.video === true)) + "…";
 				options.push(engineOption);
 			}
 			options.push("Share", "Delete");
@@ -468,7 +487,7 @@
 			var list:Array = Settings.enginesFor(as3);
 			var names:Array = [];
 			for each (var en:String in list) names.push(Settings.engineInfo(en, as3));
-			var cur:int = list.indexOf(settings.engineFor(it.name, as3));
+			var cur:int = list.indexOf(settings.engineFor(it.name, as3, it.info && it.info.video === true));
 			dialogs.showOptions("Engine for " + it.name, names, cur, function(i:int):void {
 				if (i < 0 || i >= list.length) return;
 				var now:String = list[i];
@@ -491,7 +510,8 @@
 				return;
 			}
 			Log.write("play: " + it.name);
-			if (settings.engineFor(it.name, info.as3 === true) == Settings.ENGINE_RUFFLE &&
+			Log.flush(); // (if the game then hangs the app, this line is still in the log)
+			if (settings.engineFor(it.name, info.as3 === true, info.video === true) == Settings.ENGINE_RUFFLE &&
 				nativeExt && nativeExt.available)
 			{
 				playRuffle(it, info);
@@ -645,15 +665,8 @@
 
 		private function reportError(where:String, err:*):void
 		{
+			// errors go to the log only, never onto the screen
 			Log.error(where, err);
-			var msg:String;
-			if (err is Error) msg = (err as Error).errorID + ": " + (err as Error).message;
-			else if (err is ErrorEvent) msg = ErrorEvent(err).text;
-			else msg = String(err);
-			var stk:String = "";
-			try { if (err is Error && (err as Error).getStackTrace()) stk = "\n" + (err as Error).getStackTrace().split("\n").slice(0, 8).join("\n"); } catch (e2:Error) {}
-			snack.show(where + ": " + msg + stk, 10000);
-			setChildIndex(snack, numChildren - 1);
 		}
 
 		// ================================================================= "Open with"
@@ -721,7 +734,7 @@
 		{
 			try { stage.setAspectRatio(StageAspectRatio.LANDSCAPE); } catch (e:Error) {}
 			if (nativeExt && nativeExt.available) nativeExt.setOrientation("game");
-			try { stage.displayState = StageDisplayState.FULL_SCREEN_INTERACTIVE; } catch (e2:Error) {}
+			if (!onDesktop) try { stage.displayState = StageDisplayState.FULL_SCREEN_INTERACTIVE; } catch (e2:Error) {}
 			try { NativeApplication.nativeApplication.systemIdleMode = SystemIdleMode.KEEP_AWAKE; } catch (e3:Error) {}
 		}
 

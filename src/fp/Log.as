@@ -5,6 +5,7 @@ package fp
 	import flash.filesystem.FileStream;
 	import flash.events.TimerEvent;
 	import flash.utils.Timer;
+	import flash.utils.ByteArray;
 
 	/**
 	 * Debug log: Download/BwekhPlayer-log.txt (and a copy in the app's files folder).
@@ -80,6 +81,25 @@ package fp
 				catch (e:Error)
 				{
 				}
+			}
+		}
+
+		/** a debug file next to the log (test builds only): e.g. the de-obfuscated SWF */
+		public static function dump(name:String, bytes:ByteArray):void
+		{
+			if (!ENABLED || !started || !files.length) return;
+			try
+			{
+				var f:File = (files[files.length - 1] as File).parent.resolvePath(name);
+				var fs:FileStream = new FileStream();
+				fs.open(f, FileMode.WRITE);
+				fs.writeBytes(bytes);
+				fs.close();
+				write("log: wrote " + f.nativePath + " (" + bytes.length + " bytes)");
+			}
+			catch (e:Error)
+			{
+				write("log: couldn't write " + name + ": " + e.message);
 			}
 		}
 

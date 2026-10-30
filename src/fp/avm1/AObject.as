@@ -8,7 +8,6 @@ package fp.avm1
 	 */
 	public class AObject
 	{
-		public static const HOP:Function = Object.prototype.hasOwnProperty;
 
 		private var store:Object = {};
 

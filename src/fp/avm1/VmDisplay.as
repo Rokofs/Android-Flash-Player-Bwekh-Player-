@@ -19,6 +19,7 @@ package fp.avm1
 	import flash.geom.Matrix;
 	import flash.geom.Point;
 	import flash.geom.Rectangle;
+	import flash.media.Sound;
 	import flash.media.SoundTransform;
 	import flash.system.ApplicationDomain;
 	import flash.text.Font;
@@ -29,6 +30,9 @@ package fp.avm1
 	import flash.utils.Dictionary;
 	import flash.utils.getQualifiedClassName;
 	import flash.utils.getTimer;
+	import flash.utils.Timer;
+	import flash.events.TimerEvent;
+	import fp.Log;
 
 	/** Display side of the AVM1 engine: clip wrappers, properties, timeline, events. */
 	public class VmDisplay
@@ -100,9 +104,27 @@ package fp.avm1
 			rootClip.spriteId = 0;
 			started = true;
 			// #initclip blocks first (class definitions)
-			for each (var ia:Object in data.initActions) vm.runOn(rootClip, ia.code);
-			initClip(rootClip);
+			// nothing of the timeline may run before all of them: a class that makes a clip
+			// (mx.transitions' OnEnterFrameBeacon) used to start the walk, and the root's frame 1
+			// code then ran before the classes it uses were defined
+			initClips = true;
+			try { for each (var ia:Object in data.initActions) vm.runOn(rootClip, ia.code); }
+			finally { initClips = false; }
+			if (rootClip.loaded && rootClip.loadQueued)
+			{
+				// an #initclip block touched _root (OnEnterFrameBeacon's createEmptyMovieClip): its
+				// load got queued, and ran only when the main timeline was on frame 2 already — the
+				// frame 1 code (945a's player set-up) never ran. Load it now, on frame 1.
+				var rest:Array = [];
+				for each (var gq:Object in gotoQueue) if (!(gq.load && gq.c == rootClip)) rest.push(gq);
+				gotoQueue = rest;
+				loadVia = "start"; loadClip(rootClip);
+			}
+			else initClip(rootClip);
 			walk(root, 0);
+			root.addEventListener(Event.REMOVED, onAnyRemoved);
+			root.addEventListener(Event.ADDED, onAnyAdded);
+			noteTree(root, 0);
 			if (vm.debug) vm.log("avm1: start, stage " + stage + ", root parent " + root.parent);
 			if (stage) listen();
 			else root.addEventListener(Event.ADDED_TO_STAGE, onRootAdded);
@@ -150,7 +172,16 @@ package fp.avm1
 		{
 			vm.dead = true;
 			if (root) root.removeEventListener(Event.ADDED_TO_STAGE, onRootAdded);
+			if (root) root.removeEventListener(Event.REMOVED, onAnyRemoved);
+			if (root) root.removeEventListener(Event.ADDED, onAnyAdded);
+			deadAt = getTimer();
+			sweep();
 			try { stopTree(root); } catch (e:Error) {}
+			// and every clip that left the stage (it may still be alive, playing its sound)
+			checkOffStage();
+			for (var od:* in offStage) try { stopTree(od as DisplayObject); } catch (e1:Error) {}
+			for each (var pd:DisplayObject in leaving) try { stopTree(pd); (pd as Sprite).soundTransform = new SoundTransform(0); } catch (e1b:Error) {}
+			leaving = [];
 			if (stage)
 			{
 				stage.removeEventListener(Event.ENTER_FRAME, onEnterFrame);
@@ -165,6 +196,207 @@ package fp.avm1
 			vm.lib.dispose();
 			clips = [];
 			started = false;
+		}
+
+		/**
+		 * Clips that left the stage. In Flash a clip taken off the timeline is gone, sound and all;
+		 * in AIR it lives on until it is garbage collected — playing its timeline, and its stream
+		 * sound with it: the old scene's music goes on under the new one, and on after the game is
+		 * closed. So a clip that stays off the stage is muted (and gets its sound back if it returns).
+		 */
+		private var leaving:Array = [];
+		private var offStage:Dictionary = new Dictionary(true);
+		private var offCount:int = 0;
+		private var offLogged:int = 0;
+
+		// ---- clips' stream sounds (SwfConvert took them out of the SWF: we play them)
+		/** clip -> { id, v: Voice, lastFrame } (null: a clip without a stream) */
+		private var streamStates:Dictionary = new Dictionary(true);
+		private var streamSounds:Object = {};
+		private var streamLogs:int = 0;
+
+		/** each frame: a clip's stream plays while the clip plays through its frames, in step with it */
+		private function updateStreams():void
+		{
+			for (var k:* in streamStates)
+			{
+				var st:Object = streamStates[k];
+				if (!st) continue;
+				var mc:MovieClip = k as MovieClip;
+				var info:Object = data.streams[st.id];
+				var f:int = mc.currentFrame;
+				// playing: by AIR, or stepped frame by frame by our engine (a clip it drives: AIR's
+				// isPlaying is false then, yet the frames go on)
+				var playing:Boolean = st.lastFrame > 0 && f != st.lastFrame;
+				if (!playing) try { playing = mc["isPlaying"]; } catch (e:Error) {}
+				st.lastFrame = f;
+				var active:Boolean = !paused && !vm.dead && mc.stage != null && playing && f >= info.first && f <= info.last;
+				if (!active)
+				{
+					if (st.v) { st.v.stop(); st.v = null; }
+					continue;
+				}
+				var ms:Number = streamSample(info, f) / info.rate * 1000;
+				var v:Voice = st.v as Voice;
+				if (v && !v.done && Math.abs(v.position - ms) < 400) continue;
+				if (v) v.stop();
+				var snd:Sound = streamSound(st.id, info);
+				st.v = snd ? vm.lib.playStream(snd, ms, "stream" + st.id) : null;
+				if (vm.debug && streamLogs++ < 20) vm.log("avm1: clip stream " + st.id + " from " + Math.round(ms) + " ms (frame " + f + ")" + (st.v ? "" : ": couldn't play"));
+			}
+		}
+
+		/** first sample of frame f of a stream (frames without a block go on at the stream's pace) */
+		private function streamSample(info:Object, f:int):Number
+		{
+			if (!info.arr)
+			{
+				var arr:Array = [];
+				var cur:Number = 0;
+				for (var i:int = info.first; i <= info.last; i++)
+				{
+					if (info.at[i] !== undefined) cur = info.at[i];
+					arr[i] = cur;
+					cur += info.perFrame;
+				}
+				info.arr = arr;
+			}
+			return info.arr[f] || 0;
+		}
+
+		private function streamSound(id:int, info:Object):Sound
+		{
+			var snd:Sound = streamSounds[id] as Sound;
+			if (snd) return snd;
+			try
+			{
+				var m:ByteArray = info.mp3;
+				snd = new Sound();
+				m.position = 0;
+				while (m.bytesAvailable > 0) snd.loadCompressedDataFromByteArray(m, Math.min(32768, m.bytesAvailable));
+				streamSounds[id] = snd;
+			}
+			catch (e:Error) { vm.warnOnce("stream sound " + id + ": " + e.message); snd = null; }
+			return snd;
+		}
+
+		// ---- clips of closed games
+		/** every movie clip a game had (weak): owner VmDisplay */
+		private static var everyClip:Dictionary = new Dictionary(true);
+		private static var sweeper:Timer;
+		private static var sweptMute:Dictionary = new Dictionary(true);
+		private static var sweepLogs:int = 0;
+		/** when the game was closed (0: running) */
+		private var deadAt:int = 0;
+
+		private function onAnyAdded(e:Event):void
+		{
+			// (a clip comes with its children already in it: their own ADDED never reached the root)
+			noteTree(e.target as DisplayObject, 0);
+		}
+
+		private function noteTree(d:DisplayObject, depth:int):void
+		{
+			if (!d || depth > 30) return;
+			if (d is MovieClip) note(d);
+			var c:DisplayObjectContainer = d as DisplayObjectContainer;
+			if (!c) return;
+			for (var i:int = 0; i < c.numChildren; i++)
+			{
+				var ch:DisplayObjectContainer = null;
+				try { ch = c.getChildAt(i) as DisplayObjectContainer; } catch (e:Error) {}
+				if (ch) noteTree(ch, depth + 1);
+			}
+		}
+
+		private function note(d:DisplayObject):void
+		{
+			everyClip[d] = this;
+			if (streamStates[d] === undefined)
+			{
+				var cn:String = getQualifiedClassName(d);
+				if (cn.indexOf(AbcGen.SPRITE) == 0)
+				{
+					var sid:int = int(cn.substr(AbcGen.SPRITE.length));
+					streamStates[d] = data.streams[sid] ? { id: sid, v: null, lastFrame: -1 } : null;
+					if (data.streams[sid] && vm.debug && streamLogs++ < 40)
+						vm.log("avm1: clip with a stream sound: " + d.name + " #" + sid + ", stream on frames " + data.streams[sid].first + "-" + data.streams[sid].last);
+				}
+			}
+			if (!sweeper)
+			{
+				sweeper = new Timer(500);
+				sweeper.addEventListener(TimerEvent.TIMER, function(te:TimerEvent):void { sweep(); });
+				sweeper.start();
+			}
+		}
+
+		/**
+		 * A clip of a closed game that plays (again): its stream sound is heard in the next game.
+		 * Stop and mute it, whoever restarted it.
+		 */
+		public static function sweep():void
+		{
+			var playing:int = 0, alive:int = 0, onStage:int = 0;
+			var names:Array = [];
+			for (var k:* in everyClip)
+			{
+				var owner:VmDisplay = everyClip[k] as VmDisplay;
+				if (!owner || !owner.vm.dead) continue;
+				alive++;
+				var mc:MovieClip = k as MovieClip;
+				if (!mc) continue;
+				if (mc.stage) onStage++;
+				var p:Boolean = false;
+				try { p = mc["isPlaying"]; } catch (e:Error) { p = mc.totalFrames > 1; }
+				if (p)
+				{
+					playing++;
+					if (names.length < 6) names.push(mc.name + "(" + getQualifiedClassName(mc) + " " + mc.currentFrame + "/" + mc.totalFrames + ")");
+					try { mc.stop(); } catch (e1:Error) {}
+				}
+				if (!sweptMute[mc]) { sweptMute[mc] = true; try { mc.soundTransform = new SoundTransform(0); } catch (e2:Error) {} }
+			}
+			if ((playing || onStage) && sweepLogs++ < 20)
+				Log.write("avm1: clips of a closed game: " + alive + " alive, " + onStage + " on the stage, " + playing +
+					" were playing (stopped and muted)" + (names.length ? ": " + names.join(", ") : ""));
+		}
+
+		private function onAnyRemoved(e:Event):void
+		{
+			if (e.target is Sprite && leaving.length < 2000) leaving.push(e.target);
+		}
+
+		private function checkOffStage():void
+		{
+			var d:DisplayObject;
+			if (leaving.length)
+			{
+				var list:Array = leaving;
+				leaving = [];
+				for each (d in list)
+				{
+					if (d.stage || offStage[d] !== undefined) continue;
+					var sp:Sprite = d as Sprite;
+					try
+					{
+						offStage[d] = sp.soundTransform;
+						sp.soundTransform = new SoundTransform(0);
+						offCount++;
+						if (vm.debug && offLogged++ < 5) vm.log("avm1: clip off the stage muted: " + d.name + " (" + getQualifiedClassName(d) + ")");
+					}
+					catch (e:Error) {}
+				}
+			}
+			if (!offCount) return;
+			var back:Array = [];
+			for (var k:* in offStage) if ((k as DisplayObject).stage) back.push(k);
+			for each (d in back)
+			{
+				try { (d as Sprite).soundTransform = offStage[d] || new SoundTransform(); } catch (e2:Error) {}
+				delete offStage[d];
+				offCount--;
+			}
 		}
 
 		/** stop every timeline of the movie (so nothing restarts its sounds after closing) */
@@ -199,6 +431,7 @@ package fp.avm1
 			if (cn.indexOf(AbcGen.SPRITE) == 0 || cn.indexOf(AbcGen.BUTTON) == 0) c.spriteId = int(cn.substr(5));
 			if (d == root) c.spriteId = 0;
 			wrappers[d] = c;
+			if (d is MovieClip) note(d);
 			return c;
 		}
 
@@ -250,13 +483,155 @@ package fp.avm1
 					seen.push(st);
 					visit(st, depth + 1, true);
 				}
+				watchButtonStates(sb);
 			}
 		}
+
+		// ----------------------------------------------------------------- button looks
+
+		/** SimpleButton -> look shown now */
+		private var btnShown:Dictionary = new Dictionary(true);
+
+		/**
+		 * AIR builds all looks of a button at once and their clips keep playing while hidden. In
+		 * Flash a look only exists while it is shown: a clip in the "over" look with a sound
+		 * (Masyanya talking when the mouse is on her) played forever here. Hidden looks are
+		 * stopped now, and a look starts from its first frame when it's shown, as in Flash.
+		 */
+		private function watchButtonStates(sb:SimpleButton):void
+		{
+			if (btnShown[sb] !== undefined) return;
+			if (data.rootStream)
+			{
+				sb.addEventListener(MouseEvent.MOUSE_UP, kickRootStream);
+				sb.addEventListener(MouseEvent.ROLL_OUT, kickRootStream);
+			}
+			// the same records in "over" and "down": one look in Flash, which keeps playing when
+			// the button is pressed (AIR made two copies: pressing restarted it)
+			if (sb.overState && sb.downState && sb.overState != sb.downState && sameLook(sb.overState, sb.downState, 0))
+			{
+				try { sb.downState = sb.overState; } catch (e:Error) {}
+			}
+			var animated:Boolean = false;
+			for each (var l:DisplayObject in [sb.upState, sb.overState, sb.downState])
+				if (l && hasClips(l, 0)) animated = true;
+			btnShown[sb] = null;
+			if (!animated) return;
+			showLook(sb, "up", true);
+			sb.addEventListener(MouseEvent.ROLL_OVER, function(e:MouseEvent):void { showLook(sb, e.buttonDown ? "down" : "over", false); });
+			sb.addEventListener(MouseEvent.ROLL_OUT, function(e:MouseEvent):void { showLook(sb, "up", false); });
+			sb.addEventListener(MouseEvent.MOUSE_DOWN, function(e:MouseEvent):void { showLook(sb, "down", false); });
+			sb.addEventListener(MouseEvent.MOUSE_UP, function(e:MouseEvent):void { showLook(sb, "over", false); });
+		}
+
+		/**
+		 * On Android, pressing a button silenced the main timeline's stream sound (a cartoon's
+		 * voices) until the timeline was stopped and started again (what pause / continue did).
+		 * So after a button is used: stop the main timeline for one frame and play it on.
+		 */
+		private var kickFrame:int = -1;
+
+		private function kickRootStream(e:MouseEvent):void
+		{
+			if (vm.dead || !root || kickFrame >= 0) return;
+			var playing:Boolean = false;
+			try { playing = root["isPlaying"] === true; } catch (err:Error) {}
+			if (!playing) return;
+			kickFrame = root.currentFrame;
+			root.stop();
+			root.addEventListener(Event.ENTER_FRAME, kickPlay);
+		}
+
+		private function kickPlay(e:Event):void
+		{
+			root.removeEventListener(Event.ENTER_FRAME, kickPlay);
+			var f:int = kickFrame;
+			kickFrame = -1;
+			if (vm.dead) return;
+			var playing:Boolean = false;
+			try { playing = root["isPlaying"] === true; } catch (err:Error) {}
+			// the game's own code moved or started it meanwhile: leave it
+			if (playing || root.currentFrame != f) return;
+			if (vm.debug) vm.log("avm1: main timeline restarted after a button (stream sound)");
+			root.play();
+		}
+
+		/** two looks built from the same records (same kinds of objects at the same places) */
+		private static function sameLook(a:DisplayObject, b:DisplayObject, level:int):Boolean
+		{
+			if (!a || !b) return a == b;
+			if (getQualifiedClassName(a) != getQualifiedClassName(b)) return false;
+			var ma:Matrix = a.transform.matrix, mb:Matrix = b.transform.matrix;
+			if (Math.abs(ma.a - mb.a) > 0.001 || Math.abs(ma.b - mb.b) > 0.001 || Math.abs(ma.c - mb.c) > 0.001 ||
+				Math.abs(ma.d - mb.d) > 0.001 || Math.abs(ma.tx - mb.tx) > 0.05 || Math.abs(ma.ty - mb.ty) > 0.05) return false;
+			var ca:DisplayObjectContainer = a as DisplayObjectContainer, cb:DisplayObjectContainer = b as DisplayObjectContainer;
+			if (!ca || !cb || level > 0) return true;
+			if (ca.numChildren != cb.numChildren) return false;
+			for (var i:int = 0; i < ca.numChildren; i++)
+				if (!sameLook(ca.getChildAt(i), cb.getChildAt(i), level + 1)) return false;
+			return true;
+		}
+
+		private static function hasClips(d:DisplayObject, level:int):Boolean
+		{
+			if (d is MovieClip && MovieClip(d).totalFrames > 1) return true;
+			var c:DisplayObjectContainer = d as DisplayObjectContainer;
+			if (!c || level > 4) return false;
+			for (var i:int = 0; i < c.numChildren; i++) if (hasClips(c.getChildAt(i), level + 1)) return true;
+			return false;
+		}
+
+		private function showLook(sb:SimpleButton, state:String, first:Boolean):void
+		{
+			var shown:DisplayObject = state == "down" ? sb.downState : state == "over" ? sb.overState : sb.upState;
+			if (!first && btnShown[sb] == shown) return;   // the same look stays: keeps playing
+			btnShown[sb] = shown;
+			var done:Array = [];
+			for each (var l:DisplayObject in [sb.upState, sb.overState, sb.downState])
+			{
+				if (!l || l == shown || done.indexOf(l) >= 0) continue;
+				done.push(l);
+				runLook(l, false, false, 0);
+			}
+			// at the start the up look just keeps playing (only its sound is started)
+			if (shown) runLook(shown, true, !first, 0);
+		}
+
+		/** start (from frame 1 when restart) or stop every clip of a button look, with its sound */
+		private function runLook(d:DisplayObject, play:Boolean, restart:Boolean, level:int):void
+		{
+			var mc:MovieClip = d as MovieClip;
+			try
+			{
+				if (mc && mc.totalFrames > 1)
+				{
+					if (!play) mc.gotoAndStop(1);
+					else if (restart) mc.gotoAndPlay(1);
+				}
+			}
+			catch (e:Error) {}
+			var c:AClip = wrappers[d];
+			var rec:Object = c && c.spriteId >= 0 ? data.lookSounds[c.spriteId] : null;
+			if (rec)
+			{
+				try
+				{
+					if (play) { vm.lib.stopTimelineSound(rec.id); vm.lib.timelineSound(rec); }
+					else vm.lib.stopTimelineSound(rec.id);
+				}
+				catch (e2:Error) {}
+			}
+			var dc:DisplayObjectContainer = d as DisplayObjectContainer;
+			if (!dc || level > 4) return;
+			for (var i:int = 0; i < dc.numChildren; i++) runLook(dc.getChildAt(i), play, restart, level + 1);
+		}
+
 
 		private function initClip(c:AClip):void
 		{
 			if (c.loaded) return;
 			c.loaded = true;
+			c.placedByTimeline = placingTimeline;
 			clips.push(c);
 			var d:DisplayObject = c.d;
 			var parent:AClip = parentOf(c);
@@ -414,13 +789,25 @@ package fp.avm1
 					gotoQueue.push({ c: c, f: f });
 					return;
 				}
+				// AIR calls a frame's script late (after a goto made inside code, at the end of the
+				// frame), when our queue has run it already and its code has moved the clip on: the
+				// clip isn't on that frame any more, Flash wouldn't run it (candygirl's game over
+				// ran frame 6 again from frame 7 and ended on the empty frame 8)
+				var fm:MovieClip = c.d as MovieClip;
+				if (fm && fm.currentFrame != f)
+				{
+					if (vm.watch && vm.watch["@goto"]) vm.log("avm1: @air #" + c.spriteId + " f " + f + " skipped, now on " + fm.currentFrame);
+					return;
+				}
 				// the frame script AIR runs for the frame initClip has run already: not twice
 				// (a 35 KB start-up script run again resets the whole game)
 				if (c.initFrame == f)
 				{
 					c.initFrame = -1;
-					var m:MovieClip = c.d as MovieClip;
-					if (m && m.currentFrame == f && tick - c.initTick <= 1) return;
+					// (also when the clip has moved on already: that script went there with a
+					// nextFrame() of its own — candygirl's game over ran its frame twice and skipped
+					// the results screen)
+					if (tick - c.initTick <= 1) return;
 				}
 				c.initFrame = -1;
 				if (vm.watch && vm.watch["@goto"]) vm.log("avm1: @air #" + c.spriteId + " f " + f + " tick " + tick);
@@ -435,9 +822,11 @@ package fp.avm1
 		{
 			if (vm.dead || c.unloaded) return;
 			if (c.inButton && c.d && !c.d.stage) return; // a button look that isn't shown now
-			if (c != rootClip && c.d && !c.d.stage && root && root.stage)
+			if (c != rootClip && c.d && !c.d.stage && root && root.stage && c.loadTick != tick)
 			{
-				// off the display list (removed by the timeline): Flash wouldn't run it
+				// off the display list (removed by the timeline): Flash wouldn't run it. (Not one
+				// made this frame: AIR is still putting its parent together — candygirl's START
+				// countdown was stopped on its first frame that way, and the game never began.)
 				var om:MovieClip = c.d as MovieClip;
 				if (om) om.stop();
 				return;
@@ -456,6 +845,8 @@ package fp.avm1
 			var frames:Object = data.frameActions[c.spriteId];
 			if (frames && frames[f])
 			{
+				if (!c.ranFrames) c.ranFrames = {};
+				c.ranFrames[f] = tick;
 				for each (var code:ByteArray in frames[f]) vm.runOn(c, code);
 				if (c.stopFrame == f && tick - c.stopTick <= 1)
 				{
@@ -473,8 +864,12 @@ package fp.avm1
 			try { onRemovedBody(e); } catch (err:Error) { vm.handlerError("onRemoved", err); }
 		}
 
+		/** swapDepths is moving a clip (out and back in): not a removal */
+		private var moving:Boolean = false;
+
 		private function onRemovedBody(e:Event):void
 		{
+			if (moving) return;
 			if (e.target != e.currentTarget) return;
 			var c:AClip = wrappers[e.currentTarget];
 			if (!c || !c.alive) return;
@@ -484,6 +879,8 @@ package fp.avm1
 			// in Flash a clip that leaves the timeline is gone; in AS3 it would keep playing
 			// (and running its frame scripts, e.g. a music loop) off screen — stop it
 			try { stopTree(c.d); } catch (e2:Error) {}
+			// (and the sounds started on it)
+			try { vm.lib.clipRemoved(c); } catch (e3:Error) {}
 			fireClip(c, EV_UNLOAD);
 			var onUnload:* = vm.getMember(c, "onUnload");
 			if (vm.isFunc(onUnload)) vm.callHandler(onUnload, c, []);
@@ -516,6 +913,8 @@ package fp.avm1
 
 		private function onEnterFrameBody(e:Event):void
 		{
+			if (leaving.length || offCount) checkOffStage();
+			try { updateStreams(); } catch (se:Error) {}
 			if (paused) return;
 			tick++;
 			frameStarted = true;
@@ -535,6 +934,10 @@ package fp.avm1
 			for each (var c:AClip in list)
 			{
 				if (!c.loaded || c.loadTick == tick) continue; // (made this frame: from the next one on)
+				// not set up yet (its onClipEvent(load) waits for its parent's frame code or for the
+				// code that made it): no enterFrame before load. (A preloader bar placed on the frame
+				// whose code says stop() jumped to 100% and started its parent before that stop().)
+				if (c.deferredBy || c.loadQueued) continue;
 				fireClip(c, EV_ENTERFRAME);
 				var oef:* = vm.objGet(c, "onEnterFrame"); // (no child or built-in has that name)
 				if (vm.isFunc(oef)) vm.callHandler(oef, c, []);
@@ -554,9 +957,13 @@ package fp.avm1
 		/** a goto made by the game's code makes AIR send the frame events right inside that code */
 		private var walkPending:Boolean = false;
 
+		/** the #initclip blocks are running (start) */
+		private var initClips:Boolean = false;
+
 		/** called when the game's code has ended (Vm): what the frame events skipped meanwhile */
 		public function afterCode():void
 		{
+			if (initClips) return;
 			if (walkPending && root)
 			{
 				walkPending = false;
@@ -646,6 +1053,23 @@ package fp.avm1
 			return null;
 		}
 
+		/** why a click found no handler: the clips from the target up (test builds) */
+		private var chainLogs:int = 0;
+		private function logMouseChain(t:DisplayObject):void
+		{
+			if (chainLogs++ > 20) return;
+			var d:DisplayObject = t;
+			var s:String = "";
+			for (var guard:int = 0; d && d != root.parent && guard < 12; guard++, d = d.parent)
+			{
+				var c:AClip = wrappers[d];
+				s += " | " + d.name + (c ? " #" + c.spriteId + (c.loaded ? "" : " not-loaded") + (c.alive ? "" : " dead") +
+					(vm.getMember(c, "eo") !== undefined ? " eo" : "") + (vm.isFunc(vm.getMember(c, "onPress")) ? " onPress" : "") +
+					(vm.isFunc(vm.getMember(c, "onRelease")) ? " onRelease" : "") + (vm.getMember(c, "enabled") === false ? " disabled" : "") : " (no wrapper)");
+			}
+			vm.log("avm1:   chain" + s);
+		}
+
 		private function isMouseTarget(c:AClip):Boolean
 		{
 			if (c.isText) return false;
@@ -707,6 +1131,7 @@ package fp.avm1
 			callAll("onMouseDown");
 			var c:AClip = handlerClip(e.target as DisplayObject);
 			if (vm.debug) vm.log("avm1: mouse down on " + e.target + " (" + (e.target as DisplayObject).name + ") -> " + (c ? c.d + " #" + c.spriteId : "nothing"));
+			if (vm.debug && !c) logMouseChain(e.target as DisplayObject);
 			if (vm.debug && !c && root.stage)
 			{
 				try
@@ -1273,6 +1698,12 @@ package fp.avm1
 			else m.play();
 		}
 
+		private static function clipPlaying(m:MovieClip):Boolean
+		{
+			try { return m["isPlaying"] === true; } catch (e:Error) {}
+			return false;
+		}
+
 		/**
 		 * The clip reached a frame whose script AIR hasn't run yet (AIR runs it later than Flash
 		 * would, after mouse and key events). A stop()/goto from such an event must come after
@@ -1289,6 +1720,7 @@ package fp.avm1
 			if (c.lastRunFrame == f) return;
 			var frames:Object = data.frameActions[c.spriteId];
 			if (!frames || !frames[f]) return;
+			if (!childrenMade(m)) return; // its clips aren't made yet: AIR runs it when they are
 			runFrame(c, f);
 			c.initFrame = f;
 			c.initTick = tick;
@@ -1299,6 +1731,7 @@ package fp.avm1
 			var m:MovieClip = mcOf(c);
 			if (vm.debug) dbg("stop", c);
 			if (!m) return;
+			c.codeStopTick = tick;
 			if (inInput)
 			{
 				// AIR may still run this frame's code after the event (Flash ran it before): if that
@@ -1323,7 +1756,7 @@ package fp.avm1
 
 		private function dbg(what:String, c:AClip, extra:String = ""):void
 		{
-			if (dbgCount++ > vm.debugLimit) return;
+			if (dbgCount++ > vm.debugLimit && c != rootClip) return;
 			var m:MovieClip = mcOf(c);
 			vm.log("avm1: " + what + " " + (c ? targetPath(c, true) + " #" + c.spriteId + (m ? " at " + m.currentFrame + "/" + m.totalFrames : " (not a clip)") : "null") + extra);
 		}
@@ -1398,6 +1831,10 @@ package fp.avm1
 					if (q.load) { if (q.c.loaded && q.c.loadQueued) ready.push(q); continue; }
 					var m:MovieClip = mcOf(q.c);
 					if (!m || !q.c.loaded) continue;
+					// AIR has moved the playhead, but the new frame's clips aren't made yet (a goto
+					// from a key / mouse handler): the code would not find them (engine.player...).
+					// AIR runs the frame's script itself once they exist.
+					if (!childrenMade(m)) { keep.push(q); continue; }
 					if (m.currentFrame == lastF[q.c]) ready.push(q);
 					else if (final) { if (m.currentFrame == q.f) ready.push(q); } // AIR moved it elsewhere
 					else keep.push(q);
@@ -1414,6 +1851,10 @@ package fp.avm1
 					}
 					if (c.loadQueued) continue; // its load comes first and runs this frame's code
 					if (c.lastRunFrame == q.f && c.lastRunTick == tick) continue; // AIR ran it
+					// queued twice (by the goto and by AIR): the first run moved the clip on already
+					// (candygirl's game over: frame 6's nextFrame(), then frame 6 again from frame 7)
+					var dm:MovieClip = mcOf(c);
+					if (dm && dm.currentFrame != q.f && c.ranFrames && c.ranFrames[q.f] == tick) continue;
 					rfVia = "drain"; runFrame(c, q.f);
 					var cm:MovieClip = mcOf(c);
 					if (cm && cm.currentFrame == q.f)
@@ -1423,6 +1864,17 @@ package fp.avm1
 					}
 				}
 			}
+		}
+
+		/** false while AIR is still building the frame a goto went to (a child slot is null) */
+		private static function childrenMade(m:MovieClip):Boolean
+		{
+			try
+			{
+				for (var i:int = 0; i < m.numChildren; i++) if (!m.getChildAt(i)) return false;
+			}
+			catch (e:Error) { return false; }
+			return true;
 		}
 
 		/** the clip whose frame script is running now (AIR's call, or a driven frame) */
@@ -1485,9 +1937,19 @@ package fp.avm1
 				runDriveScripts();
 			}
 		}
+		private var loggedRootFrame:int = -1;
+
 		private function onExitFrame(e:Event):void
 		{
 			if (paused) return;
+			// the main timeline's frame, always (the detailed log stops after a while)
+			if (vm.debug && root && root.currentFrame != loggedRootFrame)
+			{
+				loggedRootFrame = root.currentFrame;
+				var kids:int = 0;
+				try { kids = root.numChildren; } catch (ke:Error) {}
+				vm.log("avm1: main timeline on frame " + loggedRootFrame + "/" + root.totalFrames + (root.currentLabel ? " \"" + root.currentLabel + "\"" : "") + ", " + kids + " objects, playing " + root.isPlaying);
+			}
 			if (vm.watch && vm.watch["@goto"]) for each (var wc:AClip in clips) if (wc.spriteId == int(vm.watch["@goto"])) vm.log("avm1: @exit #" + wc.spriteId + " " + wc.d.name + " at " + (wc.d as MovieClip).currentFrame + " playing " + (wc.d as MovieClip).isPlaying + " q " + gotoQueue.length + " tick " + tick);
 			if (vm.running) return; // a goto inside the game's code: afterCode does it when the code ends
 			if (frameStarted) runEnterFrames(); // (no FRAME_CONSTRUCTED this frame)
@@ -1539,8 +2001,19 @@ package fp.avm1
 				}
 				if (c.driveFrame > 0) releaseDrive(c);
 				before = m.currentFrame;
+				if (!andPlay && wantF == before && wantF >= 1)
+				{
+					// the frame it is on: only a stop, as in Flash. (AIR's goto to the current frame
+					// left the clips it is just making stopped — candygirl's START countdown, put on
+					// txt_set's frame 1 while code said txt_set.gotoAndStop(1).)
+					m.stop();
+					c.codeStopTick = tick;
+					if (vm.watch && vm.watch["@goto"]) vm.log("avm1: @goto #" + c.spriteId + " same frame " + wantF + ": stop");
+					c.pendingGoto = null;
+					return;
+				}
 				if (andPlay) m.gotoAndPlay(frame);
-				else m.gotoAndStop(frame);
+				else { m.gotoAndStop(frame); c.codeStopTick = tick; }
 				var want:int = frame is String ? labelFrame(m, frame) : int(frame);
 				queueFrameScript(c, m, want, before);
 				if (vm.watch && vm.watch["@goto"]) vm.log("avm1: @goto #" + c.spriteId + " " + before + "->" + want + " now " + m.currentFrame + " running " + vm.running + " tick " + tick);
@@ -1802,14 +2275,21 @@ package fp.avm1
 				return;
 			}
 			c.dynDepth = depth;
-			cont.removeChild(c.d);
-			var idx:int = cont.numChildren;
-			for (var i:int = 0; i < cont.numChildren; i++)
+			// (taken out and put back at once: it isn't leaving — onRemoved must not stop and unload
+			// it and everything in it; candygirl's START countdown never ran and the game never began)
+			moving = true;
+			try
 			{
-				var w:AClip = wrappers[cont.getChildAt(i)];
-				if (w && !isNaN(w.dynDepth) && w.dynDepth > depth) { idx = i; break; }
+				cont.removeChild(c.d);
+				var idx:int = cont.numChildren;
+				for (var i:int = 0; i < cont.numChildren; i++)
+				{
+					var w:AClip = wrappers[cont.getChildAt(i)];
+					if (w && !isNaN(w.dynDepth) && w.dynDepth > depth) { idx = i; break; }
+				}
+				cont.addChildAt(c.d, idx);
 			}
-			cont.addChildAt(c.d, idx);
+			finally { moving = false; }
 		}
 
 		// ================================================================= geometry & drawing
@@ -1840,7 +2320,14 @@ package fp.avm1
 							return (hc.bd.getPixel32(bx, by) >>> 24) != 0;
 						}
 					}
-					return c.d.hitTestPoint(p.x, p.y, shape);
+					if (!shape) return c.d.hitTestPoint(p.x, p.y, false);
+					// Flash tests the outline even when the clip (or its parent) is hidden: games test
+					// against an invisible "solid" ground clip. AIR's shape test skips hidden ones.
+					var hidden:Array = null;
+					for (var hd:DisplayObject = c.d; hd && hd != root.parent; hd = hd.parent)
+						if (!hd.visible) { (hidden ||= []).push(hd); hd.visible = true; }
+					try { return c.d.hitTestPoint(p.x, p.y, true); }
+					finally { for each (hd in hidden) hd.visible = false; }
 				}
 				var t:AClip = args[0] is AClip ? args[0] : null;
 				if (!t && args[0] is String) t = vm.targetClip(ctxFor(c), args[0]);
@@ -2051,9 +2538,32 @@ package fp.avm1
 			return o;
 		}
 
+		private var mp3Logged:Boolean = false;
+
 		public function newSound(id:int):Object
 		{
 			if (data.kinds[id] != "sound") return null;
+			var m:ByteArray = data.mp3[id] as ByteArray;
+			if (m && m.length)
+			{
+				// (from its MP3 data, not the SWF's symbol: see SwfConvert.keepMp3)
+				try
+				{
+					var fresh:Sound = new Sound();
+					// (in pieces: AIR refuses one call of more than 40 KB, Error #2084)
+					m.position = 0;
+					while (m.bytesAvailable > 0)
+						fresh.loadCompressedDataFromByteArray(m, Math.min(32768, m.bytesAvailable));
+					if (fresh.length > 0)
+					{
+						var tr:Object = data.mp3Trim[id];
+						if (tr) SoftMixer.trim(fresh, tr.skip, tr.count);
+						if (!mp3Logged) { mp3Logged = true; Log.write("avm1: sounds are made from their MP3 data (not the SWF's sound symbols)"); }
+						return fresh;
+					}
+				}
+				catch (me:Error) { vm.warnOnce("sound " + id + " from its MP3 data: " + me.message); }
+			}
 			try
 			{
 				var C:Class = domain.getDefinition(AbcGen.SOUND + id) as Class;

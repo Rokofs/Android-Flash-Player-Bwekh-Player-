@@ -32,6 +32,12 @@ package fp.avm1
 		public var loadQueued:Boolean = false;
 		/** stopped by a mouse / key handler on this frame (see VmDisplay.stop) */
 		public var stopFrame:int = -1;
+		/** tick of the last stop() / gotoAndStop() by the game's code */
+		public var codeStopTick:int = -10;
+		/** put there by its parent's timeline (not attachMovie / duplicateMovieClip...) */
+		public var placedByTimeline:Boolean = false;
+		/** frame -> tick its code last ran */
+		public var ranFrames:Object;
 		public var stopTick:int = -100;
 		public var lastSoundFrame:int = -1;
 		/** lives inside a button state (up/over/down): shown and hidden by the button */
