@@ -1,0 +1,17 @@
+# build output
+bin/
+build/
+dist/
+*.apk
+*.aab
+
+# local paths
+sdk-path.txt
+AIRSDK/
+
+# editors / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
